@@ -34,5 +34,7 @@ pub enum MebalError {
     VideoWrite(String),
 }
 
+
+#[allow(unused)]
 /// Result type alias for Mebal operations
 pub type MebalResult<T> = Result<T, MebalError>;

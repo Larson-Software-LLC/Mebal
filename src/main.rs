@@ -107,13 +107,16 @@ impl AppState {
         let output_path = std::path::Path::new(&self.config.output_directory).join(&filename);
 
         // Ensure output directory exists
-        std::fs::create_dir_all(&self.config.output_directory)
-            .with_context(|| {
+        if let Err(e) = std::fs::create_dir_all(&self.config.output_directory) {
+            self.saving
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            return Err(e).with_context(|| {
                 format!(
                     "Failed to create output directory: {}",
                     self.config.output_directory
                 )
-            })?;
+            });
+        }
 
         // Get packets from buffer
         let packets = self

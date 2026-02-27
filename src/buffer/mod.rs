@@ -121,13 +121,13 @@ impl PacketBuffer {
 
         // Find the cutoff time
         let now = Instant::now();
-        let cutoff = now - Duration::from_secs(duration_secs as u64);
+        let cutoff = now.checked_sub(Duration::from_secs(duration_secs as u64));
 
         // Find the first packet after cutoff
         let packets: Vec<Packet> = inner
             .packets
             .iter()
-            .skip_while(|p| p.timestamp < cutoff)
+            .skip_while(|p| cutoff.map_or(false, |c| p.timestamp < c))
             .cloned()
             .collect();
 
@@ -190,7 +190,7 @@ impl PacketBuffer {
 
         // Remove old packets based on time
         while let Some(front) = inner.packets.front() {
-            if now.duration_since(front.timestamp) > max_age {
+            if now.saturating_duration_since(front.timestamp) > max_age {
                 let removed = inner.packets.pop_front().unwrap();
                 inner.total_bytes -= removed.data.len();
             } else {

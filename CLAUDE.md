@@ -29,7 +29,7 @@ Three async tasks run concurrently via `tokio::select!` in main:
 3. **Signal handler** — Listens for Ctrl+C to initiate clean shutdown.
 
 Shared state flows through `Arc<AppState>` (defined in `main.rs`), which holds:
-- `Arc<RwLock<PacketBuffer>>` — the circular buffer (uses `tokio::sync::RwLock`)
+- `Arc<PacketBuffer>` — the circular buffer (internally uses `parking_lot::RwLock`)
 - `Config` — validated settings
 - `AtomicBool` — save-in-progress guard
 
@@ -67,6 +67,6 @@ Key defaults: 300s buffer, 30s save duration, 8000 kbps bitrate, 60 fps, 1920x10
 
 ## Concurrency model
 
-- `parking_lot` is a dependency but the buffer actually uses `tokio::sync::RwLock` for async compatibility
+- `parking_lot::RwLock` is used for the buffer's internal state as lock sections are brief and synchronous
 - Save operations are guarded by an `AtomicBool` to prevent concurrent saves
 - Capture, hotkey, and signal tasks are joined with `tokio::select!` for clean shutdown

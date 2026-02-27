@@ -16,6 +16,7 @@ use crate::config::Config;
 /// Video parameters for output
 #[derive(Debug, Clone)]
 pub struct VideoParams {
+    #[allow(unused)]
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -177,7 +178,7 @@ pub fn trim_to_keyframe(packets: Vec<Packet>) -> Vec<Packet> {
     if let Some(keyframe_idx) = find_first_keyframe(&packets) {
         packets.into_iter().skip(keyframe_idx).collect()
     } else {
-        packets
+        Vec::new()
     }
 }
 
