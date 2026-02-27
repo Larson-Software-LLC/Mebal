@@ -1,0 +1,29 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.claude
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output files
+/recordings/
+*.mp4
+*.mkv
+*.mov
+*.avi
+
+# Config (user-specific)
+/config.toml
+
+# Logs
+*.log

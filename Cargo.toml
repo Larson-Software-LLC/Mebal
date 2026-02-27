@@ -1,0 +1,49 @@
+[package]
+name = "mebal"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A replay buffer for continuous video recording with instant replay"
+license-file = "LICENSE"
+repository = "https://github.com/yourusername/mebal"
+
+[dependencies]
+ffmpeg-next = "7.0"
+ffmpeg-sys-next = "7.0"
+
+# Global hotkey support
+global-hotkey = "0.5"
+
+# For async runtime (needed by global-hotkey)
+tokio = { version = "1.35", features = ["full"] }
+tokio-util = "0.7"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Configuration
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+# Time handling
+chrono = "0.4"
+
+# Cross-platform path handling
+dirs = "5.0"
+
+# Command line arguments
+clap = { version = "4.4", features = ["derive"] }
+
+# Concurrent data structures
+crossbeam = "0.8"
+parking_lot = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
