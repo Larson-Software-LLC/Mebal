@@ -33,8 +33,8 @@ async fn main() -> Result<()> {
     let capture_buffer = buffer.clone();
     let capture_cancel = cancel.clone();
     let capture_config = config.clone();
-    let capture_handle = tokio::task::spawn_blocking(move || {
-        match CaptureManager::new(&capture_config) {
+    let capture_handle =
+        tokio::task::spawn_blocking(move || match CaptureManager::new(&capture_config) {
             Ok(capture) => {
                 info!("Starting capture...");
                 if let Err(e) = capture.run_blocking(capture_buffer, capture_cancel) {
@@ -44,8 +44,7 @@ async fn main() -> Result<()> {
             Err(e) => {
                 error!("Failed to create capture: {}", e);
             }
-        }
-    });
+        });
 
     // Set up hotkey handler
     let hotkey_buffer = buffer.clone();
@@ -71,10 +70,8 @@ async fn main() -> Result<()> {
             let writer = VideoWriter::new(&config, extradata);
 
             let path = output_path.to_string();
-            match tokio::task::spawn_blocking(move || {
-                writer.write_packets_blocking(packets, &path)
-            })
-            .await
+            match tokio::task::spawn_blocking(move || writer.write_packets_blocking(packets, &path))
+                .await
             {
                 Ok(Ok(_)) => info!("Replay saved to {}", output_path),
                 Ok(Err(e)) => error!("Failed to save replay: {}", e),

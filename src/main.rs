@@ -80,10 +80,7 @@ impl AppState {
         );
 
         Self {
-            packet_buffer: Arc::new(PacketBuffer::new(
-                config.buffer_duration_secs,
-                config.fps,
-            )),
+            packet_buffer: Arc::new(PacketBuffer::new(config.buffer_duration_secs, config.fps)),
             config,
             saving: std::sync::atomic::AtomicBool::new(false),
         }
@@ -92,10 +89,7 @@ impl AppState {
     /// Save the current replay buffer to a file
     async fn save_replay(&self) -> Result<()> {
         // Check if already saving
-        if self
-            .saving
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
+        if self.saving.swap(true, std::sync::atomic::Ordering::SeqCst) {
             warn!("Save already in progress, ignoring trigger");
             return Ok(());
         }
@@ -131,10 +125,7 @@ impl AppState {
         }
 
         // Get codec extradata
-        let extradata = self
-            .packet_buffer
-            .get_codec_extradata()
-            .unwrap_or_default();
+        let extradata = self.packet_buffer.get_codec_extradata().unwrap_or_default();
 
         info!("Writing {} packets to {:?}", packets.len(), output_path);
 
@@ -235,8 +226,8 @@ async fn main() -> Result<()> {
     let capture_buffer = Arc::clone(&app_state.packet_buffer);
     let capture_cancel = cancel_token.clone();
     let capture_config = config.clone();
-    let capture_handle = tokio::task::spawn_blocking(move || {
-        match CaptureManager::new(&capture_config) {
+    let capture_handle =
+        tokio::task::spawn_blocking(move || match CaptureManager::new(&capture_config) {
             Ok(capture) => {
                 if let Err(e) = capture.run_blocking(capture_buffer, capture_cancel) {
                     error!("Capture error: {}", e);
@@ -245,8 +236,7 @@ async fn main() -> Result<()> {
             Err(e) => {
                 error!("Failed to create capture manager: {}", e);
             }
-        }
-    });
+        });
 
     // Set up hotkey handler
     let hotkey_state = Arc::clone(&app_state);

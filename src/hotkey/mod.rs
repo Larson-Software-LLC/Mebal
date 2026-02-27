@@ -8,8 +8,8 @@
 //! allowing users to trigger replay saves from anywhere.
 
 use anyhow::{Context, Result};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use global_hotkey::hotkey::HotKey;
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};

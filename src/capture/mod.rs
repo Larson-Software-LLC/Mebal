@@ -39,11 +39,7 @@ impl CaptureManager {
     /// Run the capture loop (blocking — call from spawn_blocking)
     ///
     /// This opens gdigrab, decodes, scales, encodes, and pushes packets into the buffer.
-    pub fn run_blocking(
-        &self,
-        buffer: Arc<PacketBuffer>,
-        cancel: CancellationToken,
-    ) -> Result<()> {
+    pub fn run_blocking(&self, buffer: Arc<PacketBuffer>, cancel: CancellationToken) -> Result<()> {
         // --- Open gdigrab input ---
         let mut input_ctx = self.open_gdigrab_input()?;
 
@@ -72,8 +68,7 @@ impl CaptureManager {
         );
 
         // --- Create encoder ---
-        let (mut encoder, encoder_name) =
-            encoder_setup::create_encoder(&self.config, &decoder)?;
+        let (mut encoder, encoder_name) = encoder_setup::create_encoder(&self.config, &decoder)?;
 
         info!("Encoder: {}", encoder_name);
 
@@ -177,7 +172,9 @@ impl CaptureManager {
             let name = std::ffi::CString::new("gdigrab").unwrap();
             let fmt = ffmpeg_sys_next::av_find_input_format(name.as_ptr());
             if fmt.is_null() {
-                anyhow::bail!("gdigrab input format not found — is FFmpeg built with gdigrab support?");
+                anyhow::bail!(
+                    "gdigrab input format not found — is FFmpeg built with gdigrab support?"
+                );
             }
             fmt
         };
@@ -197,11 +194,9 @@ impl CaptureManager {
             None => "desktop".to_string(),
         };
 
-        info!("Opening gdigrab: {} ({}x{} @ {}fps)",
-            input_path,
-            self.config.resolution.0,
-            self.config.resolution.1,
-            self.config.fps
+        info!(
+            "Opening gdigrab: {} ({}x{} @ {}fps)",
+            input_path, self.config.resolution.0, self.config.resolution.1, self.config.fps
         );
 
         // Open input via FFI

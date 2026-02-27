@@ -127,7 +127,7 @@ impl PacketBuffer {
         let packets: Vec<Packet> = inner
             .packets
             .iter()
-            .skip_while(|p| cutoff.map_or(false, |c| p.timestamp < c))
+            .skip_while(|p| cutoff.is_some_and(|c| p.timestamp < c))
             .cloned()
             .collect();
 
