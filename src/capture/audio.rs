@@ -303,7 +303,7 @@ impl AudioCaptureManager {
                 let mut packet = Packet::new(data, PacketType::Audio, Instant::now());
                 packet.pts = buffer_pts;
                 packet.dts = buffer_pts;
-                packet.is_keyframe = ((*pkt).flags & ffmpeg_sys_next::AV_PKT_FLAG_KEY as i32) != 0;
+                packet.is_keyframe = ((*pkt).flags & ffmpeg_sys_next::AV_PKT_FLAG_KEY) != 0;
 
                 buffer.push(packet);
 
