@@ -65,18 +65,35 @@ impl HotkeyManager {
 
     /// Run the hotkey event loop
     ///
-    /// This blocks and listens for hotkey events
+    /// This blocks and listens for hotkey events.
+    /// On Windows, a Win32 message pump is required for `global-hotkey`
+    /// to receive `WM_HOTKEY` messages.
     pub async fn run(&self) -> Result<()> {
         let receiver = GlobalHotKeyEvent::receiver();
 
         info!("Hotkey listener started");
 
         loop {
-            // Check for hotkey events with timeout
+            // Pump Win32 messages so WM_HOTKEY events are dispatched
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+                };
+                unsafe {
+                    let mut msg: MSG = std::mem::zeroed();
+                    while PeekMessageW(&mut msg, 0, 0, 0, PM_REMOVE) != 0 {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+            }
+
+            // Check for hotkey events
             match receiver.try_recv() {
                 Ok(event) => {
                     if event.id == self.hotkey.id() && event.state == HotKeyState::Pressed {
-                        debug!("Hotkey triggered");
+                        info!("Hotkey triggered!");
 
                         if let Some(ref callback) = self.callback {
                             let mut cb = callback.lock().await;

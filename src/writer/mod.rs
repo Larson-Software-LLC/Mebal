@@ -76,61 +76,62 @@ impl VideoWriter {
         let mut output_ctx = ffmpeg_next::format::output(&path)
             .with_context(|| format!("Failed to create output file {:?}", path))?;
 
-        // Add video stream
+        // Add video stream — codec arg is just for identification, we set codecpar manually
         let codec = ffmpeg_next::encoder::find_by_name("libx264")
             .or_else(|| ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::H264))
             .context("H264 codec not found")?;
 
         let mut stream = output_ctx.add_stream(codec)?;
+        let stream_index = stream.index();
 
-        // Set codec parameters via unsafe since high-level API is limited
-        {
-            let mut params = stream.parameters();
-            unsafe {
-                let codecpar = params.as_mut_ptr();
-                (*codecpar).codec_type = ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_VIDEO;
-                (*codecpar).codec_id = ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264;
-                (*codecpar).width = self.video_params.width as i32;
-                (*codecpar).height = self.video_params.height as i32;
-                (*codecpar).bit_rate = (self.video_params.bitrate_kbps * 1000) as i64;
-                (*codecpar).format = ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NV12 as i32;
+        // Set codec parameters directly on the stream's codecpar (bypassing the
+        // Parameters copy which loses codec_id on some ffmpeg-next versions)
+        unsafe {
+            let st = stream.as_mut_ptr();
+            let codecpar = (*st).codecpar;
 
-                // Set extradata (SPS/PPS)
-                if !self.video_params.extradata.is_empty() {
-                    let size = self.video_params.extradata.len();
-                    let data = ffmpeg_sys_next::av_mallocz(
-                        size + ffmpeg_sys_next::AV_INPUT_BUFFER_PADDING_SIZE as usize,
-                    ) as *mut u8;
-                    if !data.is_null() {
-                        std::ptr::copy_nonoverlapping(
-                            self.video_params.extradata.as_ptr(),
-                            data,
-                            size,
-                        );
-                        (*codecpar).extradata = data;
-                        (*codecpar).extradata_size = size as i32;
-                    }
+            (*codecpar).codec_type = ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_VIDEO;
+            (*codecpar).codec_id = ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264;
+            (*codecpar).width = self.video_params.width as i32;
+            (*codecpar).height = self.video_params.height as i32;
+            (*codecpar).bit_rate = (self.video_params.bitrate_kbps * 1000) as i64;
+            (*codecpar).format = ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NV12 as i32;
+
+            // Set extradata (SPS/PPS)
+            if !self.video_params.extradata.is_empty() {
+                let size = self.video_params.extradata.len();
+                let data = ffmpeg_sys_next::av_mallocz(
+                    size + ffmpeg_sys_next::AV_INPUT_BUFFER_PADDING_SIZE as usize,
+                ) as *mut u8;
+                if !data.is_null() {
+                    std::ptr::copy_nonoverlapping(self.video_params.extradata.as_ptr(), data, size);
+                    (*codecpar).extradata = data;
+                    (*codecpar).extradata_size = size as i32;
                 }
             }
 
-            stream.set_parameters(params);
-        }
-
-        // Set time base
-        unsafe {
-            let st = stream.as_mut_ptr();
             (*st).time_base = ffmpeg_sys_next::AVRational {
                 num: 1,
                 den: self.video_params.fps as i32,
             };
         }
 
-        let stream_index = stream.index();
-
-        // Write header
+        // Write header — the muxer may change the stream's time_base
         output_ctx
             .write_header()
             .context("Failed to write output header")?;
+
+        // Get the stream's actual time_base (muxer may have changed it from 1/fps)
+        let stream_time_base = output_ctx.stream(stream_index).unwrap().time_base();
+        let encoder_time_base = ffmpeg_next::Rational::new(1, self.video_params.fps as i32);
+
+        info!(
+            "Time base: encoder={}/{}, stream={}/{}",
+            encoder_time_base.numerator(),
+            encoder_time_base.denominator(),
+            stream_time_base.numerator(),
+            stream_time_base.denominator(),
+        );
 
         // Rebase timestamps so first packet starts at 0
         let pts_offset = packets[0].pts;
@@ -143,10 +144,13 @@ impl VideoWriter {
 
             let mut ffmpeg_pkt = packet.to_ffmpeg_packet();
 
-            // Rebase PTS/DTS
+            // Rebase PTS/DTS to start from 0
             ffmpeg_pkt.set_pts(Some(packet.pts - pts_offset));
             ffmpeg_pkt.set_dts(Some(packet.dts - dts_offset));
             ffmpeg_pkt.set_stream(stream_index);
+
+            // Rescale from encoder time_base to the muxer's stream time_base
+            ffmpeg_pkt.rescale_ts(encoder_time_base, stream_time_base);
 
             // Set keyframe flag
             if packet.is_keyframe {

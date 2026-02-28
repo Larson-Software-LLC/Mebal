@@ -36,6 +36,10 @@ chrono = "0.4"
 # Cross-platform path handling
 dirs = "5.0"
 
+# Windows message pump for global hotkey support
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_UI_WindowsAndMessaging"] }
+
 # Command line arguments
 clap = { version = "4.4", features = ["derive"] }
 

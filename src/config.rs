@@ -42,7 +42,7 @@ fn default_hotkey() -> String {
 
 /// Default video resolution
 fn default_resolution() -> (u32, u32) {
-    (1920, 1080)
+    (2560, 1440)
 }
 
 /// Application configuration

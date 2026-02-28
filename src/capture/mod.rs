@@ -10,6 +10,7 @@
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
@@ -106,6 +107,7 @@ impl CaptureManager {
         let mut scaled_frame = ffmpeg_next::frame::Video::empty();
         let mut frame_count: u64 = 0;
         let fps = self.config.fps;
+        let capture_start = Instant::now();
 
         info!("Starting capture loop");
 
@@ -126,8 +128,11 @@ impl CaptureManager {
                 // Scale BGR0 -> NV12
                 scaler.run(&decoded_frame, &mut scaled_frame)?;
 
-                // Set PTS on scaled frame
-                scaled_frame.set_pts(Some(frame_count as i64));
+                // Compute PTS from wall-clock time so playback speed matches
+                // real time even if gdigrab can't sustain the requested fps
+                let elapsed = capture_start.elapsed();
+                let pts = (elapsed.as_secs_f64() * fps as f64) as i64;
+                scaled_frame.set_pts(Some(pts));
                 scaled_frame.set_kind(ffmpeg_next::picture::Type::None);
 
                 // Encode
@@ -144,8 +149,9 @@ impl CaptureManager {
                 if frame_count % (fps as u64) == 0 {
                     let stats = buffer.stats();
                     debug!(
-                        "Captured {} frames, buffer: {} packets ({:.1} MB)",
+                        "Captured {} frames ({:.1} actual fps), buffer: {} packets ({:.1} MB)",
                         frame_count,
+                        frame_count as f64 / capture_start.elapsed().as_secs_f64(),
                         stats.packet_count,
                         stats.total_bytes as f64 / 1024.0 / 1024.0
                     );
