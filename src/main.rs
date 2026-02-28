@@ -23,8 +23,8 @@ mod hotkey;
 mod writer;
 
 use buffer::PacketBuffer;
-use capture::audio::AudioCaptureManager;
 use capture::CaptureManager;
+use capture::audio::AudioCaptureManager;
 use config::Config;
 use hotkey::HotkeyManager;
 use writer::VideoWriter;

@@ -78,7 +78,7 @@ impl HotkeyManager {
             #[cfg(windows)]
             {
                 use windows_sys::Win32::UI::WindowsAndMessaging::{
-                    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+                    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
                 };
                 unsafe {
                     let mut msg: MSG = std::mem::zeroed();

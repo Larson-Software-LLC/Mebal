@@ -41,8 +41,8 @@ pub mod hotkey;
 pub mod writer;
 
 pub use buffer::PacketBuffer;
-pub use capture::audio::AudioCaptureManager;
 pub use capture::CaptureManager;
+pub use capture::audio::AudioCaptureManager;
 pub use config::Config;
 pub use error::{MebalError, MebalResult};
 pub use hotkey::HotkeyManager;
