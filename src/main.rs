@@ -23,6 +23,7 @@ mod hotkey;
 mod writer;
 
 use buffer::PacketBuffer;
+use capture::audio::AudioCaptureManager;
 use capture::CaptureManager;
 use config::Config;
 use hotkey::HotkeyManager;
@@ -54,6 +55,10 @@ struct Args {
     #[arg(short, long)]
     output: Option<String>,
 
+    /// Disable audio capture
+    #[arg(long)]
+    no_audio: bool,
+
     /// List available encoders
     #[arg(long)]
     list_encoders: bool,
@@ -71,16 +76,20 @@ pub struct AppState {
 
 impl AppState {
     fn new(config: Config) -> Self {
-        let buffer_size = config.estimated_buffer_size();
-        info!(
-            "Creating packet buffer: {}s @ {}fps, estimated size: {} MB",
-            config.buffer_duration_secs,
-            config.fps,
-            buffer_size / 1024 / 1024
-        );
+        // Include audio bitrate in buffer sizing when audio is enabled
+        let total_bitrate = if config.audio_enabled {
+            config.bitrate_kbps + config.audio_bitrate_kbps
+        } else {
+            config.bitrate_kbps
+        };
 
         Self {
-            packet_buffer: Arc::new(PacketBuffer::new(config.buffer_duration_secs, config.fps)),
+            packet_buffer: Arc::new(PacketBuffer::new(
+                config.buffer_duration_secs,
+                config.fps,
+                total_bitrate,
+                2, // GOP interval in seconds (matches encoder_setup: fps * 2)
+            )),
             config,
             saving: std::sync::atomic::AtomicBool::new(false),
         }
@@ -127,13 +136,16 @@ impl AppState {
         // Get codec extradata
         let extradata = self.packet_buffer.get_codec_extradata().unwrap_or_default();
 
+        // Get audio params (None if audio capture never started)
+        let audio_params = self.packet_buffer.get_audio_params();
+
         info!("Writing {} packets to {:?}", packets.len(), output_path);
 
         // Write video file in a blocking task
         let config = self.config.clone();
         let path = output_path.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let writer = VideoWriter::new(&config, extradata);
+            let writer = VideoWriter::new(&config, extradata, audio_params);
             writer.write_packets_blocking(packets, &path)
         })
         .await;
@@ -200,6 +212,9 @@ async fn main() -> Result<()> {
     if let Some(output) = args.output {
         config.output_directory = output;
     }
+    if args.no_audio {
+        config.audio_enabled = false;
+    }
 
     // Validate configuration
     config.validate()?;
@@ -213,6 +228,17 @@ async fn main() -> Result<()> {
     );
     info!("  FPS: {}", config.fps);
     info!("  Bitrate: {} kbps", config.bitrate_kbps);
+    info!(
+        "  Audio: {}",
+        if config.audio_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    if config.audio_enabled {
+        info!("  Audio bitrate: {} kbps", config.audio_bitrate_kbps);
+    }
     info!("  Output directory: {}", config.output_directory);
     info!("  Hotkey: {}", config.hotkey);
 
@@ -222,14 +248,18 @@ async fn main() -> Result<()> {
     // Create cancellation token for clean shutdown
     let cancel_token = CancellationToken::new();
 
-    // Start capture in a blocking task
+    // Shared epoch for A/V sync
+    let capture_start = std::time::Instant::now();
+
+    // Start video capture in a blocking task
     let capture_buffer = Arc::clone(&app_state.packet_buffer);
     let capture_cancel = cancel_token.clone();
     let capture_config = config.clone();
     let capture_handle =
         tokio::task::spawn_blocking(move || match CaptureManager::new(&capture_config) {
             Ok(capture) => {
-                if let Err(e) = capture.run_blocking(capture_buffer, capture_cancel) {
+                if let Err(e) = capture.run_blocking(capture_buffer, capture_cancel, capture_start)
+                {
                     error!("Capture error: {}", e);
                 }
             }
@@ -237,6 +267,23 @@ async fn main() -> Result<()> {
                 error!("Failed to create capture manager: {}", e);
             }
         });
+
+    // Start audio capture in a blocking task (if enabled)
+    let audio_enabled = config.audio_enabled;
+    let audio_handle = if audio_enabled {
+        let audio_buffer = Arc::clone(&app_state.packet_buffer);
+        let audio_cancel = cancel_token.clone();
+        let audio_config = config.clone();
+        Some(tokio::task::spawn_blocking(move || {
+            let audio = AudioCaptureManager::new(&audio_config);
+            if let Err(e) = audio.run_blocking(audio_buffer, audio_cancel, capture_start) {
+                warn!("Audio capture failed: {} — continuing video-only", e);
+            }
+        }))
+    } else {
+        info!("Audio capture disabled");
+        None
+    };
 
     // Set up hotkey handler
     let hotkey_state = Arc::clone(&app_state);
@@ -262,6 +309,15 @@ async fn main() -> Result<()> {
     info!("========================================");
     info!("");
 
+    // Future that resolves when audio task ends, or pends forever if audio is disabled
+    let audio_future = async {
+        if let Some(handle) = audio_handle {
+            let _ = handle.await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+
     // Run hotkey manager (blocks until error or shutdown)
     tokio::select! {
         result = hotkey_manager.run() => {
@@ -271,6 +327,9 @@ async fn main() -> Result<()> {
         }
         _ = capture_handle => {
             warn!("Capture task ended");
+        }
+        _ = audio_future => {
+            warn!("Audio task ended");
         }
         _ = tokio::signal::ctrl_c() => {
             info!("Shutdown signal received");

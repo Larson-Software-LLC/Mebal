@@ -39,6 +39,7 @@ dirs = "5.0"
 # Windows message pump for global hotkey support
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_UI_WindowsAndMessaging"] }
+cpal = "0.15"
 
 # Command line arguments
 clap = { version = "4.4", features = ["derive"] }
@@ -46,6 +47,9 @@ clap = { version = "4.4", features = ["derive"] }
 # Concurrent data structures
 crossbeam = "0.8"
 parking_lot = "0.12"
+
+# Zero-copy byte buffers
+bytes = "1"
 
 [profile.release]
 opt-level = 3

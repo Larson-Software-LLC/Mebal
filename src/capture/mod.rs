@@ -17,6 +17,7 @@ use tracing::{debug, info};
 use crate::buffer::{Packet, PacketBuffer, PacketType};
 use crate::config::Config;
 
+pub mod audio;
 pub mod encoder_setup;
 
 /// Manages continuous video capture
@@ -40,7 +41,13 @@ impl CaptureManager {
     /// Run the capture loop (blocking — call from spawn_blocking)
     ///
     /// This opens gdigrab, decodes, scales, encodes, and pushes packets into the buffer.
-    pub fn run_blocking(&self, buffer: Arc<PacketBuffer>, cancel: CancellationToken) -> Result<()> {
+    /// `capture_start` is a shared epoch so audio and video PTS are aligned.
+    pub fn run_blocking(
+        &self,
+        buffer: Arc<PacketBuffer>,
+        cancel: CancellationToken,
+        capture_start: Instant,
+    ) -> Result<()> {
         // --- Open gdigrab input ---
         let mut input_ctx = self.open_gdigrab_input()?;
 
@@ -107,7 +114,6 @@ impl CaptureManager {
         let mut scaled_frame = ffmpeg_next::frame::Video::empty();
         let mut frame_count: u64 = 0;
         let fps = self.config.fps;
-        let capture_start = Instant::now();
 
         info!("Starting capture loop");
 

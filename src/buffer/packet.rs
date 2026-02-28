@@ -4,6 +4,7 @@
 
 //! Packet representation for encoded video data
 
+use bytes::Bytes;
 use std::time::Instant;
 
 /// Type of packet
@@ -21,7 +22,7 @@ pub enum PacketType {
 #[derive(Clone)]
 pub struct Packet {
     /// Raw encoded data
-    pub data: Vec<u8>,
+    pub data: Bytes,
     /// Type of packet
     pub packet_type: PacketType,
     /// Timestamp when packet was captured
@@ -42,9 +43,9 @@ pub struct Packet {
 
 impl Packet {
     /// Create a new packet
-    pub fn new(data: Vec<u8>, packet_type: PacketType, timestamp: Instant) -> Self {
+    pub fn new(data: impl Into<Bytes>, packet_type: PacketType, timestamp: Instant) -> Self {
         Self {
-            data,
+            data: data.into(),
             packet_type,
             timestamp,
             pts: 0,
@@ -61,7 +62,7 @@ impl Packet {
         ffmpeg_packet: &ffmpeg_next::codec::packet::Packet,
         packet_type: PacketType,
     ) -> Self {
-        let data = ffmpeg_packet.data().unwrap_or(&[]).to_vec();
+        let data = Bytes::copy_from_slice(ffmpeg_packet.data().unwrap_or(&[]));
         let is_keyframe = ffmpeg_packet.is_key();
 
         Self {
@@ -96,7 +97,7 @@ impl Packet {
     pub fn to_ffmpeg_packet(&self) -> ffmpeg_next::codec::packet::Packet {
         use ffmpeg_next::codec::packet::Packet as FfmpegPacket;
 
-        let mut packet = FfmpegPacket::copy(&self.data);
+        let mut packet = FfmpegPacket::copy(self.data.as_ref());
         packet.set_pts(Some(self.pts));
         packet.set_dts(Some(self.dts));
         packet.set_duration(self.duration);
@@ -167,7 +168,7 @@ mod tests {
         let data = vec![1, 2, 3, 4, 5];
         let packet = Packet::new(data.clone(), PacketType::Video, Instant::now());
 
-        assert_eq!(packet.data, data);
+        assert_eq!(packet.data.as_ref(), data.as_slice());
         assert!(packet.is_video());
         assert_eq!(packet.size(), 5);
     }

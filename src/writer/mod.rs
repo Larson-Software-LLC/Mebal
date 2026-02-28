@@ -3,14 +3,11 @@
 // This source code is proprietary and confidential.
 
 //! Video file writer for saving replay clips
-//!
-//! Writes encoded H.264 packets to an MP4 container file using FFmpeg.
-
 use anyhow::{Context, Result};
 use std::path::Path;
 use tracing::info;
 
-use crate::buffer::{Packet, PacketType};
+use crate::buffer::{AudioParams, Packet, PacketType};
 use crate::config::Config;
 
 /// Video parameters for output
@@ -28,11 +25,17 @@ pub struct VideoParams {
 /// Video writer for saving replay clips
 pub struct VideoWriter {
     video_params: VideoParams,
+    audio_params: Option<AudioParams>,
+    audio_bitrate_kbps: usize,
 }
 
 impl VideoWriter {
     /// Create a new video writer
-    pub fn new(config: &Config, codec_extradata: Vec<u8>) -> Self {
+    pub fn new(
+        config: &Config,
+        codec_extradata: Vec<u8>,
+        audio_params: Option<AudioParams>,
+    ) -> Self {
         let video_params = VideoParams {
             width: config.resolution.0,
             height: config.resolution.1,
@@ -42,7 +45,11 @@ impl VideoWriter {
             extradata: codec_extradata,
         };
 
-        Self { video_params }
+        Self {
+            video_params,
+            audio_params,
+            audio_bitrate_kbps: config.audio_bitrate_kbps,
+        }
     }
 
     /// Write packets to a video file
@@ -116,50 +123,144 @@ impl VideoWriter {
             };
         }
 
+        // --- Conditionally add audio stream ---
+        let audio_stream_index = if let Some(ref audio) = self.audio_params {
+            let idx = unsafe {
+                let fmt_ctx = output_ctx.as_mut_ptr();
+                let audio_codec = ffmpeg_sys_next::avcodec_find_encoder(
+                    ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_AAC,
+                );
+                let st = ffmpeg_sys_next::avformat_new_stream(fmt_ctx, audio_codec);
+                if st.is_null() {
+                    anyhow::bail!("Failed to add audio stream");
+                }
+                let idx = (*st).index as usize;
+
+                let codecpar = (*st).codecpar;
+                (*codecpar).codec_type = ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_AUDIO;
+                (*codecpar).codec_id = ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_AAC;
+                (*codecpar).sample_rate = audio.sample_rate as i32;
+                (*codecpar).bit_rate = (self.audio_bitrate_kbps * 1000) as i64;
+
+                (*codecpar).ch_layout = std::mem::zeroed();
+                ffmpeg_sys_next::av_channel_layout_default(
+                    &mut (*codecpar).ch_layout,
+                    audio.channels as i32,
+                );
+
+                // Set audio extradata
+                if !audio.extradata.is_empty() {
+                    let size = audio.extradata.len();
+                    let data = ffmpeg_sys_next::av_mallocz(
+                        size + ffmpeg_sys_next::AV_INPUT_BUFFER_PADDING_SIZE as usize,
+                    ) as *mut u8;
+                    if !data.is_null() {
+                        std::ptr::copy_nonoverlapping(audio.extradata.as_ptr(), data, size);
+                        (*codecpar).extradata = data;
+                        (*codecpar).extradata_size = size as i32;
+                    }
+                }
+
+                (*codecpar).frame_size = audio.frame_size as i32;
+
+                (*st).time_base = ffmpeg_sys_next::AVRational {
+                    num: 1,
+                    den: audio.sample_rate as i32,
+                };
+
+                idx
+            };
+            info!("Audio stream added at index {}", idx);
+            Some(idx)
+        } else {
+            None
+        };
+
         // Write header — the muxer may change the stream's time_base
         output_ctx
             .write_header()
             .context("Failed to write output header")?;
 
         // Get the stream's actual time_base (muxer may have changed it from 1/fps)
-        let stream_time_base = output_ctx.stream(stream_index).unwrap().time_base();
-        let encoder_time_base = ffmpeg_next::Rational::new(1, self.video_params.fps as i32);
+        let video_stream_tb = output_ctx.stream(stream_index).unwrap().time_base();
+        let buffer_time_base = ffmpeg_next::Rational::new(1, self.video_params.fps as i32);
+
+        let audio_stream_tb =
+            audio_stream_index.map(|idx| output_ctx.stream(idx).unwrap().time_base());
 
         info!(
-            "Time base: encoder={}/{}, stream={}/{}",
-            encoder_time_base.numerator(),
-            encoder_time_base.denominator(),
-            stream_time_base.numerator(),
-            stream_time_base.denominator(),
+            "Time base: buffer={}/{}, video_stream={}/{}{}",
+            buffer_time_base.numerator(),
+            buffer_time_base.denominator(),
+            video_stream_tb.numerator(),
+            video_stream_tb.denominator(),
+            if let Some(atb) = audio_stream_tb {
+                format!(", audio_stream={}/{}", atb.numerator(), atb.denominator())
+            } else {
+                String::new()
+            },
         );
 
-        // Rebase timestamps so first packet starts at 0
-        let pts_offset = packets[0].pts;
-        let dts_offset = packets[0].dts;
+        // Compute per-stream PTS offsets (rebase to 0)
+        let video_pts_offset = packets
+            .iter()
+            .find(|p| p.packet_type == PacketType::Video)
+            .map(|p| p.pts)
+            .unwrap_or(0);
+        let video_dts_offset = packets
+            .iter()
+            .find(|p| p.packet_type == PacketType::Video)
+            .map(|p| p.dts)
+            .unwrap_or(0);
+
+        let audio_pts_offset = packets
+            .iter()
+            .find(|p| p.packet_type == PacketType::Audio)
+            .map(|p| p.pts)
+            .unwrap_or(0);
+        let audio_dts_offset = packets
+            .iter()
+            .find(|p| p.packet_type == PacketType::Audio)
+            .map(|p| p.dts)
+            .unwrap_or(0);
 
         for packet in &packets {
-            if packet.packet_type != PacketType::Video {
-                continue;
+            match packet.packet_type {
+                PacketType::Video => {
+                    let mut ffmpeg_pkt = packet.to_ffmpeg_packet();
+                    ffmpeg_pkt.set_pts(Some(packet.pts - video_pts_offset));
+                    ffmpeg_pkt.set_dts(Some(packet.dts - video_dts_offset));
+                    ffmpeg_pkt.set_stream(stream_index);
+                    ffmpeg_pkt.rescale_ts(buffer_time_base, video_stream_tb);
+
+                    if packet.is_keyframe {
+                        ffmpeg_pkt.set_flags(ffmpeg_next::codec::packet::Flags::KEY);
+                    }
+
+                    ffmpeg_pkt
+                        .write_interleaved(&mut output_ctx)
+                        .with_context(|| {
+                            format!("Failed to write video packet PTS={}", packet.pts)
+                        })?;
+                }
+                PacketType::Audio => {
+                    if let Some(audio_idx) = audio_stream_index {
+                        let audio_tb = audio_stream_tb.unwrap();
+                        let mut ffmpeg_pkt = packet.to_ffmpeg_packet();
+                        ffmpeg_pkt.set_pts(Some(packet.pts - audio_pts_offset));
+                        ffmpeg_pkt.set_dts(Some(packet.dts - audio_dts_offset));
+                        ffmpeg_pkt.set_stream(audio_idx);
+                        ffmpeg_pkt.rescale_ts(buffer_time_base, audio_tb);
+
+                        ffmpeg_pkt
+                            .write_interleaved(&mut output_ctx)
+                            .with_context(|| {
+                                format!("Failed to write audio packet PTS={}", packet.pts)
+                            })?;
+                    }
+                }
+                _ => {} // skip EndOfStream markers etc.
             }
-
-            let mut ffmpeg_pkt = packet.to_ffmpeg_packet();
-
-            // Rebase PTS/DTS to start from 0
-            ffmpeg_pkt.set_pts(Some(packet.pts - pts_offset));
-            ffmpeg_pkt.set_dts(Some(packet.dts - dts_offset));
-            ffmpeg_pkt.set_stream(stream_index);
-
-            // Rescale from encoder time_base to the muxer's stream time_base
-            ffmpeg_pkt.rescale_ts(encoder_time_base, stream_time_base);
-
-            // Set keyframe flag
-            if packet.is_keyframe {
-                ffmpeg_pkt.set_flags(ffmpeg_next::codec::packet::Flags::KEY);
-            }
-
-            ffmpeg_pkt
-                .write_interleaved(&mut output_ctx)
-                .with_context(|| format!("Failed to write packet PTS={}", packet.pts))?;
         }
 
         // Write trailer
@@ -167,14 +268,19 @@ impl VideoWriter {
             .write_trailer()
             .context("Failed to write output trailer")?;
 
-        info!("Video file written to {:?}", path);
+        info!("Media file written to {:?}", path);
         Ok(())
     }
 }
 
-/// Find first keyframe in packet list
+/// Find first video keyframe in packet list
+///
+/// Only considers video packets — AAC audio packets are also marked as
+/// keyframes by FFmpeg, which would fool a type-agnostic check.
 pub fn find_first_keyframe(packets: &[Packet]) -> Option<usize> {
-    packets.iter().position(|p| p.is_keyframe)
+    packets
+        .iter()
+        .position(|p| p.is_keyframe && p.packet_type == PacketType::Video)
 }
 
 /// Trim packets to start from a keyframe
@@ -193,7 +299,7 @@ mod tests {
 
     fn create_test_packet(pts: i64, is_keyframe: bool) -> Packet {
         Packet {
-            data: vec![0u8; 100],
+            data: bytes::Bytes::from(vec![0u8; 100]),
             packet_type: PacketType::Video,
             timestamp: Instant::now(),
             pts,
@@ -212,6 +318,28 @@ mod tests {
             create_test_packet(1, false),
             create_test_packet(2, true),
             create_test_packet(3, false),
+        ];
+
+        assert_eq!(find_first_keyframe(&packets), Some(2));
+    }
+
+    #[test]
+    fn test_find_first_keyframe_ignores_audio() {
+        let packets = vec![
+            // Audio keyframe should be skipped
+            Packet {
+                data: bytes::Bytes::from(vec![0u8; 50]),
+                packet_type: PacketType::Audio,
+                timestamp: Instant::now(),
+                pts: 0,
+                dts: 0,
+                duration: 1,
+                is_keyframe: true,
+                sequence: 0,
+                stream_index: 0,
+            },
+            create_test_packet(1, false),
+            create_test_packet(2, true),
         ];
 
         assert_eq!(find_first_keyframe(&packets), Some(2));

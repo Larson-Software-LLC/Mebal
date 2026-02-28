@@ -13,18 +13,20 @@
 //! ```no_run
 //! use mebal::{Config, CaptureManager, PacketBuffer};
 //! use std::sync::Arc;
+//! use std::time::Instant;
 //! use tokio_util::sync::CancellationToken;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     let config = Config::load()?;
-//!     let buffer = Arc::new(PacketBuffer::new(300, 60));
+//!     let buffer = Arc::new(PacketBuffer::new(300, 60, config.bitrate_kbps, 2));
 //!     let cancel = CancellationToken::new();
+//!     let capture_start = Instant::now();
 //!
 //!     let capture = CaptureManager::new(&config)?;
 //!     // Run capture in a blocking task
 //!     tokio::task::spawn_blocking(move || {
-//!         capture.run_blocking(buffer, cancel).unwrap();
+//!         capture.run_blocking(buffer, cancel, capture_start).unwrap();
 //!     });
 //!
 //!     Ok(())
@@ -39,6 +41,7 @@ pub mod hotkey;
 pub mod writer;
 
 pub use buffer::PacketBuffer;
+pub use capture::audio::AudioCaptureManager;
 pub use capture::CaptureManager;
 pub use config::Config;
 pub use error::{MebalError, MebalResult};

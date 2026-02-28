@@ -20,6 +20,9 @@ const DEFAULT_SAVE_DURATION: u32 = 30; // 30 seconds
 /// Default video bitrate in kbps
 const DEFAULT_BITRATE_KBPS: usize = 8000; // 8 Mbps
 
+/// Default audio bitrate in kbps
+const DEFAULT_AUDIO_BITRATE_KBPS: usize = 192;
+
 /// Default frames per second
 const DEFAULT_FPS: u32 = 60;
 
@@ -87,6 +90,14 @@ pub struct Config {
     /// Encoder to use: "h264_nvenc", "libx264", or None for auto-detect
     #[serde(default)]
     pub encoder: Option<String>,
+
+    /// Whether audio capture is enabled
+    #[serde(default = "default_audio_enabled")]
+    pub audio_enabled: bool,
+
+    /// Audio bitrate in kbps
+    #[serde(default = "default_audio_bitrate_kbps")]
+    pub audio_bitrate_kbps: usize,
 }
 
 fn default_buffer_duration() -> u32 {
@@ -105,6 +116,14 @@ fn default_fps() -> u32 {
     DEFAULT_FPS
 }
 
+fn default_audio_enabled() -> bool {
+    true
+}
+
+fn default_audio_bitrate_kbps() -> usize {
+    DEFAULT_AUDIO_BITRATE_KBPS
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -118,6 +137,8 @@ impl Default for Config {
             resolution: default_resolution(),
             capture_source: None,
             encoder: None,
+            audio_enabled: true,
+            audio_bitrate_kbps: DEFAULT_AUDIO_BITRATE_KBPS,
         }
     }
 }
@@ -179,8 +200,8 @@ impl Config {
             "Save duration must be greater than 0"
         );
         anyhow::ensure!(
-            self.save_duration_secs <= self.buffer_duration_secs,
-            "Save duration cannot exceed buffer duration"
+            self.save_duration_secs + 2 <= self.buffer_duration_secs,
+            "Save duration + GOP compensation (2s) must not exceed buffer duration"
         );
         anyhow::ensure!(self.bitrate_kbps > 0, "Bitrate must be greater than 0");
         anyhow::ensure!(self.fps > 0, "FPS must be greater than 0");
@@ -190,12 +211,6 @@ impl Config {
         );
 
         Ok(())
-    }
-
-    /// Get estimated buffer size in bytes
-    pub fn estimated_buffer_size(&self) -> usize {
-        // Rough estimation: bitrate * duration / 8
-        self.buffer_duration_secs as usize * self.bitrate_kbps * 1024 / 8
     }
 }
 
@@ -210,8 +225,10 @@ mod tests {
         assert_eq!(config.save_duration_secs, 30);
         assert_eq!(config.bitrate_kbps, 8000);
         assert_eq!(config.fps, 60);
-        assert_eq!(config.resolution, (1920, 1080));
+        assert_eq!(config.resolution, (2560, 1440));
         assert!(config.encoder.is_none());
+        assert!(config.audio_enabled);
+        assert_eq!(config.audio_bitrate_kbps, 192);
     }
 
     #[test]

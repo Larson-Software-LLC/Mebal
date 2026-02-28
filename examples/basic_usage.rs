@@ -22,8 +22,8 @@ async fn main() -> Result<()> {
     // Create default configuration
     let config = Config::default();
 
-    // Create the packet buffer (5 minutes @ 60fps)
-    let buffer = Arc::new(PacketBuffer::new(300, 60));
+    // Create the packet buffer (5 minutes @ 60fps, 8Mbps bitrate, 2s GOP)
+    let buffer = Arc::new(PacketBuffer::new(300, 60, config.bitrate_kbps, 2));
     info!("Packet buffer created");
 
     // Create cancellation token for clean shutdown
@@ -33,11 +33,13 @@ async fn main() -> Result<()> {
     let capture_buffer = buffer.clone();
     let capture_cancel = cancel.clone();
     let capture_config = config.clone();
+    let capture_start = std::time::Instant::now();
     let capture_handle =
         tokio::task::spawn_blocking(move || match CaptureManager::new(&capture_config) {
             Ok(capture) => {
                 info!("Starting capture...");
-                if let Err(e) = capture.run_blocking(capture_buffer, capture_cancel) {
+                if let Err(e) = capture.run_blocking(capture_buffer, capture_cancel, capture_start)
+                {
                     error!("Capture error: {}", e);
                 }
             }
@@ -67,7 +69,7 @@ async fn main() -> Result<()> {
 
             // Save to file
             let output_path = "replay_example.mp4";
-            let writer = VideoWriter::new(&config, extradata);
+            let writer = VideoWriter::new(&config, extradata, None);
 
             let path = output_path.to_string();
             match tokio::task::spawn_blocking(move || writer.write_packets_blocking(packets, &path))
