@@ -15,6 +15,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+mod app;
 mod buffer;
 mod capture;
 mod config;
@@ -22,12 +23,11 @@ mod error;
 mod hotkey;
 mod writer;
 
-use buffer::PacketBuffer;
+use app::AppState;
 use capture::CaptureManager;
 use capture::audio::AudioCaptureManager;
 use config::Config;
 use hotkey::HotkeyManager;
-use writer::VideoWriter;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -62,111 +62,6 @@ struct Args {
     /// List available encoders
     #[arg(long)]
     list_encoders: bool,
-}
-
-/// Application state shared across components
-pub struct AppState {
-    /// The circular buffer storing encoded video packets
-    packet_buffer: Arc<PacketBuffer>,
-    /// Configuration settings
-    config: Config,
-    /// Whether a save operation is currently in progress
-    saving: std::sync::atomic::AtomicBool,
-}
-
-impl AppState {
-    fn new(config: Config) -> Self {
-        // Include audio bitrate in buffer sizing when audio is enabled
-        let total_bitrate = if config.audio_enabled {
-            config.bitrate_kbps + config.audio_bitrate_kbps
-        } else {
-            config.bitrate_kbps
-        };
-
-        Self {
-            packet_buffer: Arc::new(PacketBuffer::new(
-                config.buffer_duration_secs,
-                config.fps,
-                total_bitrate,
-                2, // GOP interval in seconds (matches encoder_setup: fps * 2)
-            )),
-            config,
-            saving: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-
-    /// Save the current replay buffer to a file
-    async fn save_replay(&self) -> Result<()> {
-        // Check if already saving
-        if self.saving.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            warn!("Save already in progress, ignoring trigger");
-            return Ok(());
-        }
-
-        info!("Saving replay...");
-
-        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("{}_{}.mp4", self.config.output_prefix, timestamp);
-        let output_path = std::path::Path::new(&self.config.output_directory).join(&filename);
-
-        // Ensure output directory exists
-        if let Err(e) = std::fs::create_dir_all(&self.config.output_directory) {
-            self.saving
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-            return Err(e).with_context(|| {
-                format!(
-                    "Failed to create output directory: {}",
-                    self.config.output_directory
-                )
-            });
-        }
-
-        // Get packets from buffer
-        let packets = self
-            .packet_buffer
-            .get_packets_for_duration(self.config.save_duration_secs);
-
-        if packets.is_empty() {
-            warn!("No packets in buffer to save");
-            self.saving
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-            return Ok(());
-        }
-
-        // Get codec extradata
-        let extradata = self.packet_buffer.get_codec_extradata().unwrap_or_default();
-
-        // Get audio params (None if audio capture never started)
-        let audio_params = self.packet_buffer.get_audio_params();
-
-        info!("Writing {} packets to {:?}", packets.len(), output_path);
-
-        // Write video file in a blocking task
-        let config = self.config.clone();
-        let path = output_path.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let writer = VideoWriter::new(&config, extradata, audio_params);
-            writer.write_packets_blocking(packets, &path)
-        })
-        .await;
-
-        match result {
-            Ok(Ok(_)) => {
-                info!("Replay saved to {:?}", output_path);
-            }
-            Ok(Err(e)) => {
-                error!("Failed to write replay: {}", e);
-            }
-            Err(e) => {
-                error!("Write task panicked: {}", e);
-            }
-        }
-
-        self.saving
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-
-        Ok(())
-    }
 }
 
 #[tokio::main]

@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "Default capability for Mebal GUI",
+  "windows": ["settings"],
+  "permissions": [
+    "core:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered"
+  ]
+}

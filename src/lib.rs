@@ -33,6 +33,7 @@
 //! }
 //! ```
 
+pub mod app;
 pub mod buffer;
 pub mod capture;
 pub mod config;
@@ -40,6 +41,7 @@ pub mod error;
 pub mod hotkey;
 pub mod writer;
 
+pub use app::AppState;
 pub use buffer::PacketBuffer;
 pub use capture::CaptureManager;
 pub use capture::audio::AudioCaptureManager;
@@ -50,3 +52,8 @@ pub use writer::VideoWriter;
 
 /// Version of the Mebal library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Initialize FFmpeg. Call before using encoder probing functions.
+pub fn init_ffmpeg() {
+    ffmpeg_next::init().ok();
+}
