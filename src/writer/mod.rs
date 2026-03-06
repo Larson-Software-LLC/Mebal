@@ -5,6 +5,7 @@
 //! Video file writer for saving replay clips
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::buffer::{AudioParams, Packet, PacketType};
@@ -18,6 +19,7 @@ pub struct VideoParams {
     pub fps: u32,
     pub bitrate_kbps: usize,
     pub extradata: Vec<u8>,
+    pub codec_id: ffmpeg_sys_next::AVCodecID,
 }
 
 /// Video writer for saving replay clips
@@ -32,6 +34,7 @@ impl VideoWriter {
         config: &Config,
         codec_extradata: Vec<u8>,
         audio_params: Option<AudioParams>,
+        codec_id: ffmpeg_sys_next::AVCodecID,
     ) -> Self {
         Self {
             video_params: VideoParams {
@@ -40,6 +43,7 @@ impl VideoWriter {
                 fps: config.fps,
                 bitrate_kbps: config.bitrate_kbps,
                 extradata: codec_extradata,
+                codec_id,
             },
             audio_params,
             audio_bitrate_kbps: config.audio_bitrate_kbps,
@@ -51,7 +55,7 @@ impl VideoWriter {
     /// This is a blocking operation — call from spawn_blocking.
     pub fn write_packets_blocking<P: AsRef<Path>>(
         &self,
-        packets: Vec<Packet>,
+        packets: Vec<Arc<Packet>>,
         output_path: P,
     ) -> Result<()> {
         let path = output_path.as_ref();
@@ -77,27 +81,25 @@ impl VideoWriter {
         let mut output_ctx = ffmpeg_next::format::output(&path)
             .with_context(|| format!("Failed to create output file {:?}", path))?;
 
-        // Add video stream — codec arg is just for identification, we set codecpar manually
-        let codec = ffmpeg_next::encoder::find_by_name("libx264")
-            .or_else(|| ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::H264))
-            .context("H264 codec not found")?;
+        // Add video stream via raw FFI — we're muxing pre-encoded packets, no encoder needed.
+        let stream_index = unsafe {
+            let fmt_ctx = output_ctx.as_mut_ptr();
+            let video_codec = ffmpeg_sys_next::avcodec_find_encoder(self.video_params.codec_id);
+            let st = ffmpeg_sys_next::avformat_new_stream(fmt_ctx, video_codec);
+            if st.is_null() {
+                anyhow::bail!("Failed to add video stream");
+            }
+            let idx = (*st).index as usize;
 
-        let mut stream = output_ctx.add_stream(codec)?;
-        let stream_index = stream.index();
-
-        // Set codec parameters via FFI (ffmpeg-next's Parameters loses codec_id)
-        unsafe {
-            let st = stream.as_mut_ptr();
             let codecpar = (*st).codecpar;
-
             (*codecpar).codec_type = ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_VIDEO;
-            (*codecpar).codec_id = ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264;
+            (*codecpar).codec_id = self.video_params.codec_id;
             (*codecpar).width = self.video_params.width as i32;
             (*codecpar).height = self.video_params.height as i32;
             (*codecpar).bit_rate = (self.video_params.bitrate_kbps * 1000) as i64;
             (*codecpar).format = ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NV12 as i32;
 
-            // Set extradata (SPS/PPS)
+            // Set extradata (SPS/PPS for H.264, VPS/SPS/PPS for HEVC, etc.)
             if !self.video_params.extradata.is_empty() {
                 let size = self.video_params.extradata.len();
                 let data = ffmpeg_sys_next::av_mallocz(
@@ -114,9 +116,11 @@ impl VideoWriter {
                 num: 1,
                 den: self.video_params.fps as i32,
             };
-        }
 
-        // --- Conditionally add audio stream ---
+            idx
+        };
+
+        // Maybe add audio stream
         let audio_stream_index = if let Some(ref audio) = self.audio_params {
             let idx = unsafe {
                 let fmt_ctx = output_ctx.as_mut_ptr();
@@ -282,14 +286,14 @@ impl VideoWriter {
 }
 
 /// Find the index of the first video keyframe (ignores audio keyframes).
-pub fn find_first_keyframe(packets: &[Packet]) -> Option<usize> {
+pub fn find_first_keyframe(packets: &[Arc<Packet>]) -> Option<usize> {
     packets
         .iter()
         .position(|p| p.is_keyframe && p.packet_type == PacketType::Video)
 }
 
 /// Trim packets to start from a keyframe
-pub fn trim_to_keyframe(packets: Vec<Packet>) -> Vec<Packet> {
+pub fn trim_to_keyframe(packets: Vec<Arc<Packet>>) -> Vec<Arc<Packet>> {
     if let Some(keyframe_idx) = find_first_keyframe(&packets) {
         packets.into_iter().skip(keyframe_idx).collect()
     } else {
@@ -302,8 +306,8 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
-    fn create_test_packet(pts: i64, is_keyframe: bool) -> Packet {
-        Packet {
+    fn create_test_packet(pts: i64, is_keyframe: bool) -> Arc<Packet> {
+        Arc::new(Packet {
             data: bytes::Bytes::from(vec![0u8; 100]),
             packet_type: PacketType::Video,
             timestamp: Instant::now(),
@@ -313,7 +317,7 @@ mod tests {
             is_keyframe,
             sequence: pts as u64,
             stream_index: 0,
-        }
+        })
     }
 
     #[test]
@@ -332,7 +336,7 @@ mod tests {
     fn test_find_first_keyframe_ignores_audio() {
         let packets = vec![
             // Audio keyframe should be skipped
-            Packet {
+            Arc::new(Packet {
                 data: bytes::Bytes::from(vec![0u8; 50]),
                 packet_type: PacketType::Audio,
                 timestamp: Instant::now(),
@@ -342,7 +346,7 @@ mod tests {
                 is_keyframe: true,
                 sequence: 0,
                 stream_index: 0,
-            },
+            }),
             create_test_packet(1, false),
             create_test_packet(2, true),
         ];

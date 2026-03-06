@@ -12,7 +12,7 @@ repository = "https://github.com/yourusername/mebal"
 
 [dependencies]
 ffmpeg-next = "7.0"
-ffmpeg-sys-next = "7.0"
+ffmpeg-sys-next = { version = "7.0", features = ["static"] }
 
 # Global hotkey support (non-exclusive, uses low-level keyboard hook)
 livesplit-hotkey = "0.7"
@@ -51,6 +51,13 @@ parking_lot = "0.12"
 
 # Zero-copy byte buffers
 bytes = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "buffer"
+harness = false
 
 [profile.release]
 opt-level = 3

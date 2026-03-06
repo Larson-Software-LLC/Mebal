@@ -121,7 +121,9 @@ fn buffer_to_trim_pipeline_produces_keyframe_aligned_output() {
 
 #[test]
 fn trim_returns_empty_when_no_keyframes_present() {
-    let packets: Vec<Packet> = (0..100).map(|i| video_packet(i, false, 128)).collect();
+    let packets: Vec<Arc<Packet>> = (0..100)
+        .map(|i| Arc::new(video_packet(i, false, 128)))
+        .collect();
 
     let trimmed = trim_to_keyframe(packets);
     assert!(trimmed.is_empty(), "no keyframes → empty result");
@@ -130,10 +132,10 @@ fn trim_returns_empty_when_no_keyframes_present() {
 #[test]
 fn find_first_keyframe_skips_audio_keyframes() {
     let packets = vec![
-        audio_packet(0, 64), // audio is_keyframe=true, should be ignored
-        video_packet(1, false, 128),
-        video_packet(2, true, 128), // first *video* keyframe
-        video_packet(3, false, 128),
+        Arc::new(audio_packet(0, 64)), // audio is_keyframe=true, should be ignored
+        Arc::new(video_packet(1, false, 128)),
+        Arc::new(video_packet(2, true, 128)), // first *video* keyframe
+        Arc::new(video_packet(3, false, 128)),
     ];
 
     assert_eq!(find_first_keyframe(&packets), Some(2));
@@ -317,8 +319,8 @@ fn writer_round_trip_with_fixture() {
         .unwrap_or(30)
         .max(1);
 
-    // Collect extradata and resolution
-    let (extradata, width, height) = {
+    // Collect extradata, resolution, and codec ID from the fixture
+    let (extradata, width, height, codec_id) = {
         let stream = input_ctx.stream(video_stream_idx).unwrap();
         let params = stream.parameters();
         unsafe {
@@ -332,7 +334,12 @@ fn writer_round_trip_with_fixture() {
                 )
                 .to_vec()
             };
-            (extra, (*codecpar).width as u32, (*codecpar).height as u32)
+            (
+                extra,
+                (*codecpar).width as u32,
+                (*codecpar).height as u32,
+                (*codecpar).codec_id,
+            )
         }
     };
 
@@ -389,7 +396,7 @@ fn writer_round_trip_with_fixture() {
         audio_enabled: false,
         ..test_config()
     };
-    let writer = VideoWriter::new(&config, extradata, None);
+    let writer = VideoWriter::new(&config, extradata, None, codec_id);
     let result = writer.write_packets_blocking(retrieved, &output);
     assert!(result.is_ok(), "writer should succeed: {:?}", result.err());
 

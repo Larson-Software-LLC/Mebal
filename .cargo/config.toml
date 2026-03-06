@@ -1,0 +1,3 @@
+[env]
+VCPKG_ROOT = "C:/Users/Brody/vcpkg"
+VCPKGRS_TRIPLET = "x64-windows-static"

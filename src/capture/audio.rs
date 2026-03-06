@@ -16,6 +16,60 @@ use tracing::{debug, error, info, warn};
 use crate::buffer::{AudioParams, Packet, PacketBuffer, PacketType};
 use crate::config::Config;
 
+/// RAII wrapper for an FFmpeg `AVFrame` pointer.
+///
+/// Calls `av_frame_free` on drop, preventing leaks on early returns or `?`.
+struct AvFrame(*mut ffmpeg_sys_next::AVFrame);
+
+impl AvFrame {
+    fn alloc() -> Result<Self> {
+        let ptr = unsafe { ffmpeg_sys_next::av_frame_alloc() };
+        if ptr.is_null() {
+            anyhow::bail!("Failed to allocate AVFrame");
+        }
+        Ok(Self(ptr))
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut ffmpeg_sys_next::AVFrame {
+        self.0
+    }
+}
+
+impl Drop for AvFrame {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { ffmpeg_sys_next::av_frame_free(&mut self.0) }
+        }
+    }
+}
+
+/// RAII wrapper for an FFmpeg `AVPacket` pointer.
+///
+/// Calls `av_packet_free` on drop (which internally unrefs then frees).
+struct AvPacket(*mut ffmpeg_sys_next::AVPacket);
+
+impl AvPacket {
+    fn alloc() -> Result<Self> {
+        let ptr = unsafe { ffmpeg_sys_next::av_packet_alloc() };
+        if ptr.is_null() {
+            anyhow::bail!("Failed to allocate AVPacket");
+        }
+        Ok(Self(ptr))
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut ffmpeg_sys_next::AVPacket {
+        self.0
+    }
+}
+
+impl Drop for AvPacket {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { ffmpeg_sys_next::av_packet_free(&mut self.0) }
+        }
+    }
+}
+
 /// Manages system audio capture via WASAPI loopback
 pub struct AudioCaptureManager {
     config: Config,
@@ -158,21 +212,17 @@ impl AudioCaptureManager {
         let mut pcm_buffer: Vec<f32> = Vec::with_capacity(frame_size * ch * 2);
         let mut audio_pts: i64 = 0; // PTS in encoder timebase (1/sample_rate)
 
-        // Allocate an AVFrame for feeding the encoder
-        let frame_ptr = unsafe { ffmpeg_sys_next::av_frame_alloc() };
-        if frame_ptr.is_null() {
-            anyhow::bail!("Failed to allocate AVFrame for audio");
-        }
-
+        // Allocate an AVFrame for feeding the encoder (freed automatically via Drop)
+        let mut frame = AvFrame::alloc()?;
         unsafe {
-            (*frame_ptr).format = ffmpeg_sys_next::AVSampleFormat::AV_SAMPLE_FMT_FLTP as i32;
-            (*frame_ptr).sample_rate = sample_rate as i32;
-            (*frame_ptr).nb_samples = frame_size as i32;
-            (*frame_ptr).ch_layout = std::mem::zeroed();
-            ffmpeg_sys_next::av_channel_layout_default(&mut (*frame_ptr).ch_layout, ch as i32);
-            let ret = ffmpeg_sys_next::av_frame_get_buffer(frame_ptr, 0);
+            let p = frame.as_mut_ptr();
+            (*p).format = ffmpeg_sys_next::AVSampleFormat::AV_SAMPLE_FMT_FLTP as i32;
+            (*p).sample_rate = sample_rate as i32;
+            (*p).nb_samples = frame_size as i32;
+            (*p).ch_layout = std::mem::zeroed();
+            ffmpeg_sys_next::av_channel_layout_default(&mut (*p).ch_layout, ch as i32);
+            let ret = ffmpeg_sys_next::av_frame_get_buffer(p, 0);
             if ret < 0 {
-                ffmpeg_sys_next::av_frame_free(&mut (frame_ptr as *mut _));
                 anyhow::bail!(
                     "Failed to allocate audio frame buffer: {}",
                     ffmpeg_next::Error::from(ret)
@@ -203,7 +253,7 @@ impl AudioCaptureManager {
             while pcm_buffer.len() >= frame_size * ch {
                 // Make frame writable
                 unsafe {
-                    let ret = ffmpeg_sys_next::av_frame_make_writable(frame_ptr);
+                    let ret = ffmpeg_sys_next::av_frame_make_writable(frame.as_mut_ptr());
                     if ret < 0 {
                         error!("Failed to make audio frame writable");
                         break;
@@ -212,13 +262,14 @@ impl AudioCaptureManager {
 
                 // De-interleave f32 -> planar f32
                 unsafe {
+                    let p = frame.as_mut_ptr();
                     for c in 0..ch {
-                        let plane = (*frame_ptr).data[c] as *mut f32;
+                        let plane = (*p).data[c] as *mut f32;
                         for s in 0..frame_size {
                             *plane.add(s) = pcm_buffer[s * ch + c];
                         }
                     }
-                    (*frame_ptr).pts = audio_pts;
+                    (*p).pts = audio_pts;
                 }
 
                 // Remove consumed samples
@@ -227,8 +278,10 @@ impl AudioCaptureManager {
 
                 // Send frame to encoder
                 unsafe {
-                    let ret =
-                        ffmpeg_sys_next::avcodec_send_frame(encoder_ctx.as_mut_ptr(), frame_ptr);
+                    let ret = ffmpeg_sys_next::avcodec_send_frame(
+                        encoder_ctx.as_mut_ptr(),
+                        frame.as_mut_ptr(),
+                    );
                     if ret < 0 {
                         debug!(
                             "avcodec_send_frame error: {}",
@@ -251,11 +304,9 @@ impl AudioCaptureManager {
             self.drain_encoder(&encoder_ctx, &buffer, audio_base_pts, sample_rate, fps)?;
         }
 
-        // Cleanup
-        unsafe {
-            ffmpeg_sys_next::av_frame_free(&mut (frame_ptr as *mut _));
-        }
+        // Drop cpal stream first to stop callbacks before frame is freed.
         drop(stream);
+        // `frame` dropped here via RAII → av_frame_free called automatically.
 
         info!("Audio capture ended");
         Ok(())
@@ -273,49 +324,50 @@ impl AudioCaptureManager {
         sample_rate: u32,
         fps: u32,
     ) -> Result<()> {
-        unsafe {
-            let mut pkt = ffmpeg_sys_next::av_packet_alloc();
-            if pkt.is_null() {
-                anyhow::bail!("Failed to allocate AVPacket");
+        let mut pkt = AvPacket::alloc()?;
+
+        loop {
+            let ret = unsafe {
+                ffmpeg_sys_next::avcodec_receive_packet(
+                    encoder_ctx.as_ptr() as *mut _,
+                    pkt.as_mut_ptr(),
+                )
+            };
+            if ret < 0 {
+                // EAGAIN or EOF — no more packets right now
+                break;
             }
 
-            loop {
-                let ret =
-                    ffmpeg_sys_next::avcodec_receive_packet(encoder_ctx.as_ptr() as *mut _, pkt);
-                if ret < 0 {
-                    // EAGAIN or EOF — no more packets right now
-                    break;
-                }
-
-                let data = if !(*pkt).data.is_null() && (*pkt).size > 0 {
-                    std::slice::from_raw_parts((*pkt).data, (*pkt).size as usize).to_vec()
+            let (data, encoder_pts, flags) = unsafe {
+                let p = pkt.as_mut_ptr();
+                let data = if !(*p).data.is_null() && (*p).size > 0 {
+                    std::slice::from_raw_parts((*p).data, (*p).size as usize).to_vec()
                 } else {
                     Vec::new()
                 };
+                (data, (*p).pts, (*p).flags)
+            };
 
-                // Convert encoder PTS (1/sample_rate) to buffer timebase (1/fps),
-                // then add the wall-clock offset captured when audio started.
-                let encoder_pts = (*pkt).pts;
-                let buffer_pts = audio_base_pts + encoder_pts * fps as i64 / sample_rate as i64;
+            // Convert encoder PTS (1/sample_rate) to buffer timebase (1/fps),
+            // then add the wall-clock offset captured when audio started.
+            let buffer_pts = audio_base_pts + encoder_pts * fps as i64 / sample_rate as i64;
 
-                // Skip AAC encoder priming delay packets (negative PTS).
-                if buffer_pts < 0 {
-                    ffmpeg_sys_next::av_packet_unref(pkt);
-                    continue;
-                }
-
-                let mut packet = Packet::new(data, PacketType::Audio, Instant::now());
-                packet.pts = buffer_pts;
-                packet.dts = buffer_pts;
-                packet.is_keyframe = ((*pkt).flags & ffmpeg_sys_next::AV_PKT_FLAG_KEY) != 0;
-
-                buffer.push(packet);
-
-                ffmpeg_sys_next::av_packet_unref(pkt);
+            // Skip AAC encoder priming delay packets (negative PTS).
+            if buffer_pts < 0 {
+                unsafe { ffmpeg_sys_next::av_packet_unref(pkt.as_mut_ptr()) };
+                continue;
             }
 
-            ffmpeg_sys_next::av_packet_free(&mut pkt);
+            let mut packet = Packet::new(data, PacketType::Audio, Instant::now());
+            packet.pts = buffer_pts;
+            packet.dts = buffer_pts;
+            packet.is_keyframe = (flags & ffmpeg_sys_next::AV_PKT_FLAG_KEY) != 0;
+
+            buffer.push(packet);
+
+            unsafe { ffmpeg_sys_next::av_packet_unref(pkt.as_mut_ptr()) };
         }
+        // `pkt` dropped here via RAII → av_packet_free called automatically.
 
         Ok(())
     }

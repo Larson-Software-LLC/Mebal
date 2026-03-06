@@ -10,6 +10,7 @@
 
 use parking_lot::RwLock;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, trace};
@@ -46,7 +47,7 @@ pub struct PacketBuffer {
 /// Internal buffer state
 struct BufferInner {
     /// The packet queue
-    packets: VecDeque<Packet>,
+    packets: VecDeque<Arc<Packet>>,
     /// Total bytes currently in buffer
     total_bytes: usize,
     /// Maximum bytes before eviction
@@ -108,8 +109,8 @@ impl PacketBuffer {
         // Add packet with sequence number
         let mut packet = packet;
         packet.sequence = sequence;
-        inner.packets.push_back(packet);
         inner.total_bytes += packet_size;
+        inner.packets.push_back(Arc::new(packet));
 
         trace!(
             "Added packet #{} ({} bytes), total: {} bytes, count: {}",
@@ -125,7 +126,7 @@ impl PacketBuffer {
 
     /// Get packets covering the last `duration_secs`, plus GOP overfetch
     /// so `trim_to_keyframe` can find a keyframe without shortening the clip.
-    pub fn get_packets_for_duration(&self, duration_secs: u32) -> Vec<Packet> {
+    pub fn get_packets_for_duration(&self, duration_secs: u32) -> Vec<Arc<Packet>> {
         let inner = self.inner.read();
 
         if inner.packets.is_empty() {
@@ -141,12 +142,16 @@ impl PacketBuffer {
         let fetch_secs = duration_secs as i64 + gop_secs;
         let cutoff_pts = last_pts - fetch_secs * fps;
 
-        let packets: Vec<Packet> = inner
-            .packets
-            .iter()
-            .skip_while(|p| p.pts < cutoff_pts)
-            .cloned()
-            .collect();
+        // Binary search for the first packet at or past the cutoff (O(log n)
+        // instead of the previous O(n) skip_while scan).
+        let start_idx = inner.packets.partition_point(|p| p.pts < cutoff_pts);
+        let count = inner.packets.len() - start_idx;
+
+        // Clone only the Arc refcounts — no packet data is copied.
+        let mut packets = Vec::with_capacity(count);
+        for i in start_idx..inner.packets.len() {
+            packets.push(Arc::clone(&inner.packets[i]));
+        }
 
         debug!(
             "Retrieved {} packets for last {}s (overfetch {}s for GOP, cutoff_pts={}, total in buffer: {})",
@@ -161,7 +166,7 @@ impl PacketBuffer {
     }
 
     /// Get all packets in the buffer
-    pub fn get_all_packets(&self) -> Vec<Packet> {
+    pub fn get_all_packets(&self) -> Vec<Arc<Packet>> {
         let inner = self.inner.read();
         inner.packets.iter().cloned().collect()
     }

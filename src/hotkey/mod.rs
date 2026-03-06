@@ -16,6 +16,17 @@ mod parser;
 
 pub use parser::parse_hotkey;
 
+const SUGGESTED_KEYS: [&str; 8] = [
+    "F9",
+    "F10",
+    "F11",
+    "F12",
+    "Ctrl+F9",
+    "Ctrl+Shift+R",
+    "Alt+`",
+    "Ctrl+Alt+S",
+];
+
 /// Hotkey manager that handles global keyboard shortcuts.
 ///
 /// Uses `livesplit-hotkey` which installs a non-exclusive low-level keyboard
@@ -65,20 +76,6 @@ pub fn validate_hotkey(hotkey_str: &str) -> bool {
     parse_hotkey(hotkey_str).is_ok()
 }
 
-/// List of common hotkey suggestions
-pub fn suggested_hotkeys() -> Vec<&'static str> {
-    vec![
-        "F9",
-        "F10",
-        "F11",
-        "F12",
-        "Ctrl+F9",
-        "Ctrl+Shift+R",
-        "Alt+`",
-        "Ctrl+Alt+S",
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,12 +85,5 @@ mod tests {
         assert!(validate_hotkey("F9"));
         assert!(validate_hotkey("Ctrl+F9"));
         assert!(validate_hotkey("Ctrl+Shift+R"));
-    }
-
-    #[test]
-    fn test_suggested_hotkeys() {
-        let suggestions = suggested_hotkeys();
-        assert!(!suggestions.is_empty());
-        assert!(suggestions.contains(&"F9"));
     }
 }
