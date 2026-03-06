@@ -11,42 +11,39 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Default buffer duration in seconds
-const DEFAULT_BUFFER_DURATION: u32 = 300; // 5 minutes
-
-/// Default save duration in seconds
-const DEFAULT_SAVE_DURATION: u32 = 30; // 30 seconds
-
-/// Default video bitrate in kbps
-const DEFAULT_BITRATE_KBPS: usize = 8000; // 8 Mbps
-
-/// Default audio bitrate in kbps
+const DEFAULT_BUFFER_DURATION: u32 = 300;
+const DEFAULT_SAVE_DURATION: u32 = 30;
+const DEFAULT_BITRATE_KBPS: usize = 8000;
 const DEFAULT_AUDIO_BITRATE_KBPS: usize = 192;
-
-/// Default frames per second
 const DEFAULT_FPS: u32 = 60;
+const DEFAULT_RESOLUTION: (u32, u32) = (2560, 1440);
 
-/// Default output directory
-fn default_output_dir() -> String {
+/// GOP (Group of Pictures) interval in seconds.
+///
+/// Controls keyframe frequency: the encoder produces a keyframe every
+/// `GOP_INTERVAL_SECS * fps` frames. Also used as overfetch padding
+/// when retrieving packets for save, so `trim_to_keyframe` can find
+/// a keyframe without shortening the clip.
+pub const GOP_INTERVAL_SECS: u32 = 1;
+
+macro_rules! serde_default {
+    ($name:ident, $type:ty, $value:expr) => {
+        fn $name() -> $type {
+            $value
+        }
+    };
+}
+
+serde_default!(
+    default_output_dir,
+    String,
     dirs::video_dir()
         .map(|p: PathBuf| p.join("mebal").to_string_lossy().to_string())
         .unwrap_or_else(|| "./recordings".to_string())
-}
-
-/// Default output filename prefix
-fn default_output_prefix() -> String {
-    "replay".to_string()
-}
-
-/// Default hotkey combination
-fn default_hotkey() -> String {
-    "F9".to_string()
-}
-
-/// Default video resolution
-fn default_resolution() -> (u32, u32) {
-    (2560, 1440)
-}
+);
+serde_default!(default_output_prefix, String, "replay".to_string());
+serde_default!(default_hotkey, String, "F9".to_string());
+serde_default!(default_resolution, (u32, u32), DEFAULT_RESOLUTION);
 
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,29 +97,16 @@ pub struct Config {
     pub audio_bitrate_kbps: usize,
 }
 
-fn default_buffer_duration() -> u32 {
-    DEFAULT_BUFFER_DURATION
-}
-
-fn default_save_duration() -> u32 {
-    DEFAULT_SAVE_DURATION
-}
-
-fn default_bitrate_kbps() -> usize {
-    DEFAULT_BITRATE_KBPS
-}
-
-fn default_fps() -> u32 {
-    DEFAULT_FPS
-}
-
-fn default_audio_enabled() -> bool {
-    true
-}
-
-fn default_audio_bitrate_kbps() -> usize {
+serde_default!(default_buffer_duration, u32, DEFAULT_BUFFER_DURATION);
+serde_default!(default_save_duration, u32, DEFAULT_SAVE_DURATION);
+serde_default!(default_bitrate_kbps, usize, DEFAULT_BITRATE_KBPS);
+serde_default!(default_fps, u32, DEFAULT_FPS);
+serde_default!(default_audio_enabled, bool, true);
+serde_default!(
+    default_audio_bitrate_kbps,
+    usize,
     DEFAULT_AUDIO_BITRATE_KBPS
-}
+);
 
 impl Default for Config {
     fn default() -> Self {
@@ -189,8 +173,18 @@ impl Config {
         Ok(config_dir.join("config.toml"))
     }
 
+    /// Combined video + audio bitrate when audio is enabled.
+    pub fn total_bitrate_kbps(&self) -> usize {
+        if self.audio_enabled {
+            self.bitrate_kbps + self.audio_bitrate_kbps
+        } else {
+            self.bitrate_kbps
+        }
+    }
+
     /// Validate configuration values
     pub fn validate(&self) -> Result<()> {
+        let gop = GOP_INTERVAL_SECS;
         anyhow::ensure!(
             self.buffer_duration_secs > 0,
             "Buffer duration must be greater than 0"
@@ -200,8 +194,8 @@ impl Config {
             "Save duration must be greater than 0"
         );
         anyhow::ensure!(
-            self.save_duration_secs + 2 <= self.buffer_duration_secs,
-            "Save duration + GOP compensation (2s) must not exceed buffer duration"
+            self.save_duration_secs + gop <= self.buffer_duration_secs,
+            "Save duration + GOP compensation ({gop}s) must not exceed buffer duration"
         );
         anyhow::ensure!(self.bitrate_kbps > 0, "Bitrate must be greater than 0");
         anyhow::ensure!(self.fps > 0, "FPS must be greater than 0");

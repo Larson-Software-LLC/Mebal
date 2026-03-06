@@ -1,4 +1,4 @@
-use mebal::{AppState, AudioCaptureManager, CaptureManager, Config};
+use mebal::{AppState, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::sync::Arc;
@@ -13,6 +13,7 @@ pub struct TauriAppState {
     pub inner: Arc<AppState>,
     cancel_token: Mutex<Option<CancellationToken>>,
     capturing: AtomicBool,
+    hotkey_manager: Mutex<Option<HotkeyManager>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -33,7 +34,13 @@ impl TauriAppState {
             inner: Arc::new(AppState::new(config)),
             cancel_token: Mutex::new(None),
             capturing: AtomicBool::new(false),
+            hotkey_manager: Mutex::new(None),
         }
+    }
+
+    /// Store the hotkey manager so it stays alive (and can be re-registered).
+    pub fn set_hotkey_manager(&self, manager: HotkeyManager) {
+        *self.hotkey_manager.lock() = Some(manager);
     }
 
     pub fn is_capturing(&self) -> bool {
@@ -106,14 +113,11 @@ impl TauriAppState {
         info!("Capture stopped");
     }
 
-    /// Rebuild the AppState with a new config (after settings change that
-    /// requires a capture restart). Stops existing capture, replaces inner,
-    /// clears the old buffer.
+    /// Stop capture, reconfigure the buffer, and restart with the current config.
     pub fn restart_with_config(&self, _config: Config) {
         self.stop_capture();
-        // Clear old buffer data since encoder params may have changed
+        self.inner.reconfigure_buffer();
         self.inner.packet_buffer.clear();
-        // Start capture again — the new config is already persisted in AppState
         if let Err(e) = self.start_capture() {
             error!("Failed to restart capture: {}", e);
         }

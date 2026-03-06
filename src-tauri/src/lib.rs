@@ -20,7 +20,6 @@ pub fn run() {
     let tauri_state = TauriAppState::new(config);
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(tauri_state)
         .invoke_handler(tauri::generate_handler![
             commands::get_config,

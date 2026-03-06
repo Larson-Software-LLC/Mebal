@@ -4,118 +4,49 @@
 
 //! Global hotkey handling for Mebal
 //!
-//! This module provides cross-platform global hotkey support,
-//! allowing users to trigger replay saves from anywhere.
+//! This module provides cross-platform global hotkey support using a low-level
+//! keyboard hook that does not exclusively capture keypresses — other apps
+//! continue to receive the key events normally.
 
 use anyhow::{Context, Result};
-use global_hotkey::hotkey::HotKey;
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use livesplit_hotkey::{Hook, Hotkey};
+use tracing::{debug, info};
 
 mod parser;
 
 pub use parser::parse_hotkey;
 
-/// Hotkey manager that handles global keyboard shortcuts
+/// Hotkey manager that handles global keyboard shortcuts.
+///
+/// Uses `livesplit-hotkey` which installs a non-exclusive low-level keyboard
+/// hook (`WH_KEYBOARD_LL` on Windows). The hook fires on its own thread.
 pub struct HotkeyManager {
-    /// The global hotkey manager
-    manager: GlobalHotKeyManager,
-    /// Registered hotkey
-    hotkey: HotKey,
-    /// Callback function when hotkey is triggered
-    callback: Option<Arc<Mutex<Box<dyn FnMut() + Send + 'static>>>>,
+    hook: Hook,
+    hotkey: Hotkey,
 }
 
 impl HotkeyManager {
-    /// Create a new hotkey manager with the specified hotkey string
-    ///
-    /// Hotkey format examples:
-    /// - "F9" - Single key
-    /// - "Ctrl+F9" - Modifier + key
-    /// - "Ctrl+Shift+R" - Multiple modifiers
-    pub fn new(hotkey_str: &str) -> Result<Self> {
-        let manager = GlobalHotKeyManager::new().context("Failed to create hotkey manager")?;
+    /// Create a new hotkey manager, parse the hotkey string, and register it
+    /// with the given callback immediately.
+    pub fn new<F>(hotkey_str: &str, callback: F) -> Result<Self>
+    where
+        F: FnMut() + Send + 'static,
+    {
+        let hook = Hook::new().context("Failed to create keyboard hook")?;
 
-        // Parse hotkey string
         let hotkey = parse_hotkey(hotkey_str)?;
 
-        // Register the hotkey
-        manager
-            .register(hotkey)
+        hook.register(hotkey, callback)
             .context("Failed to register hotkey")?;
 
         info!("Registered hotkey '{}'", hotkey_str);
 
-        Ok(Self {
-            manager,
-            hotkey,
-            callback: None,
-        })
-    }
-
-    /// Set the callback function to be called when hotkey is triggered
-    pub fn on_trigger<F>(&mut self, callback: F)
-    where
-        F: FnMut() + Send + 'static,
-    {
-        self.callback = Some(Arc::new(Mutex::new(Box::new(callback))));
-    }
-
-    /// Run the hotkey event loop
-    ///
-    /// This blocks and listens for hotkey events.
-    /// On Windows, a Win32 message pump is required for `global-hotkey`
-    /// to receive `WM_HOTKEY` messages.
-    pub async fn run(&self) -> Result<()> {
-        let receiver = GlobalHotKeyEvent::receiver();
-
-        info!("Hotkey listener started");
-
-        loop {
-            // Pump Win32 messages so WM_HOTKEY events are dispatched
-            #[cfg(windows)]
-            {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{
-                    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
-                };
-                unsafe {
-                    let mut msg: MSG = std::mem::zeroed();
-                    while PeekMessageW(&mut msg, 0, 0, 0, PM_REMOVE) != 0 {
-                        TranslateMessage(&msg);
-                        DispatchMessageW(&msg);
-                    }
-                }
-            }
-
-            // Check for hotkey events
-            match receiver.try_recv() {
-                Ok(event) => {
-                    if event.id == self.hotkey.id() && event.state == HotKeyState::Pressed {
-                        info!("Hotkey triggered!");
-
-                        if let Some(ref callback) = self.callback {
-                            let mut cb = callback.lock().await;
-                            cb();
-                        }
-                    }
-                }
-                Err(crossbeam::channel::TryRecvError::Empty) => {
-                    // No events, sleep briefly
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                }
-                Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                    error!("Hotkey event channel disconnected");
-                    return Err(anyhow::anyhow!("Hotkey channel disconnected"));
-                }
-            }
-        }
+        Ok(Self { hook, hotkey })
     }
 
     /// Unregister the hotkey
     pub fn unregister(&self) -> Result<()> {
-        self.manager
+        self.hook
             .unregister(self.hotkey)
             .context("Failed to unregister hotkey")?;
         debug!("Unregistered hotkey");
@@ -125,7 +56,6 @@ impl HotkeyManager {
 
 impl Drop for HotkeyManager {
     fn drop(&mut self) {
-        // Unregister hotkey on drop
         let _ = self.unregister();
     }
 }

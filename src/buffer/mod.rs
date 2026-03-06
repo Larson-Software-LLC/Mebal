@@ -2,15 +2,15 @@
 // All rights reserved.
 // This source code is proprietary and confidential.
 
-//! Circular packet buffer for storing encoded video data
+//! Thread-safe circular buffer for encoded media packets
 //!
-//! This module provides a thread-safe, lock-free(ish) circular buffer
-//! optimized for storing H.264 encoded video packets. It maintains
-//! packets in chronological order and can efficiently retrieve
-//! the last N seconds of video.
+//! Stores H.264 video and AAC audio packets in chronological order,
+//! evicting by wall-clock age and byte-size limits. Retrieval uses
+//! PTS-based windowing with GOP compensation for keyframe alignment.
 
 use parking_lot::RwLock;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, trace};
 
@@ -32,11 +32,11 @@ pub struct PacketBuffer {
     /// Internal storage for packets
     inner: RwLock<BufferInner>,
     /// Maximum duration to keep in buffer (in seconds)
-    max_duration_secs: u32,
+    max_duration_secs: AtomicU32,
     /// Expected frames per second (for capacity estimation)
-    fps: u32,
+    fps: AtomicU32,
     /// GOP interval in seconds (used for keyframe compensation during retrieval)
-    gop_secs: u32,
+    gop_secs: AtomicU32,
     /// Codec extradata (SPS/PPS) needed by the writer to produce valid MP4
     codec_extradata: RwLock<Option<Vec<u8>>>,
     /// Audio stream parameters (set by audio capture, read by writer)
@@ -55,18 +55,20 @@ struct BufferInner {
     sequence: u64,
 }
 
+/// Multiplier for VBR headroom (5/4 = 1.25x) applied to the byte budget.
+const VBR_HEADROOM_NUM: usize = 5;
+const VBR_HEADROOM_DEN: usize = 4;
+
+/// Compute the maximum byte budget for a given bitrate and duration.
+const fn max_bytes_for(bitrate_kbps: usize, duration_secs: u32) -> usize {
+    (bitrate_kbps * 1024 / 8) * duration_secs as usize * VBR_HEADROOM_NUM / VBR_HEADROOM_DEN
+}
+
 impl PacketBuffer {
-    /// Create a new packet buffer
-    ///
-    /// # Arguments
-    /// * `max_duration_secs` - Maximum duration to keep in buffer
-    /// * `fps` - Expected frames per second
-    /// * `bitrate_kbps` - Video bitrate in kilobits per second (used for buffer sizing)
-    /// * `gop_secs` - GOP interval in seconds (used for keyframe compensation)
+    /// Create a new packet buffer.
     pub fn new(max_duration_secs: u32, fps: u32, bitrate_kbps: usize, gop_secs: u32) -> Self {
         let estimated_packets = (fps * max_duration_secs) as usize;
-        // Compute max_bytes from bitrate with 1.25x headroom for VBR spikes
-        let max_bytes = (bitrate_kbps * 1024 / 8) * max_duration_secs as usize * 5 / 4;
+        let max_bytes = max_bytes_for(bitrate_kbps, max_duration_secs);
 
         debug!(
             "Creating PacketBuffer: {}s @ {}fps, ~{} packets capacity, max {} MB ({}kbps * 1.25)",
@@ -84,9 +86,9 @@ impl PacketBuffer {
                 max_bytes,
                 sequence: 0,
             }),
-            max_duration_secs,
-            fps,
-            gop_secs,
+            max_duration_secs: AtomicU32::new(max_duration_secs),
+            fps: AtomicU32::new(fps),
+            gop_secs: AtomicU32::new(gop_secs),
             codec_extradata: RwLock::new(None),
             audio_params: RwLock::new(None),
         }
@@ -118,15 +120,11 @@ impl PacketBuffer {
         );
 
         // Evict old packets if needed
-        Self::evict_old_packets(&mut inner, self.max_duration_secs);
+        Self::evict_old_packets(&mut inner, self.max_duration_secs.load(Ordering::Relaxed));
     }
 
-    /// Get packets for the last N seconds
-    ///
-    /// Uses PTS-based retrieval with GOP compensation to ensure
-    /// the writer has a keyframe to start from. Over-fetches by
-    /// `gop_secs` worth of packets so `trim_to_keyframe()` can
-    /// find a keyframe without shortening the clip.
+    /// Get packets covering the last `duration_secs`, plus GOP overfetch
+    /// so `trim_to_keyframe` can find a keyframe without shortening the clip.
     pub fn get_packets_for_duration(&self, duration_secs: u32) -> Vec<Packet> {
         let inner = self.inner.read();
 
@@ -137,10 +135,11 @@ impl PacketBuffer {
         // Use last packet's PTS as the reference point
         let last_pts = inner.packets.back().unwrap().pts;
 
-        // Over-fetch by gop_secs so trim_to_keyframe doesn't shorten the clip.
-        // Since encoder timebase is 1/fps, fps PTS units = 1 second.
-        let fetch_secs = duration_secs as i64 + self.gop_secs as i64;
-        let cutoff_pts = last_pts - fetch_secs * self.fps as i64;
+        // Over-fetch by gop_secs so trim_to_keyframe has room for a keyframe.
+        let gop_secs = self.gop_secs.load(Ordering::Relaxed) as i64;
+        let fps = self.fps.load(Ordering::Relaxed) as i64;
+        let fetch_secs = duration_secs as i64 + gop_secs;
+        let cutoff_pts = last_pts - fetch_secs * fps;
 
         let packets: Vec<Packet> = inner
             .packets
@@ -153,7 +152,7 @@ impl PacketBuffer {
             "Retrieved {} packets for last {}s (overfetch {}s for GOP, cutoff_pts={}, total in buffer: {})",
             packets.len(),
             duration_secs,
-            self.gop_secs,
+            gop_secs,
             cutoff_pts,
             inner.packets.len()
         );
@@ -170,11 +169,12 @@ impl PacketBuffer {
     /// Get current buffer statistics
     pub fn stats(&self) -> BufferStats {
         let inner = self.inner.read();
+        let fps = self.fps.load(Ordering::Relaxed);
         // Derive duration from PTS range
         let duration_secs = if inner.packets.len() >= 2 {
             let first_pts = inner.packets.front().unwrap().pts;
             let last_pts = inner.packets.back().unwrap().pts;
-            ((last_pts - first_pts) / self.fps as i64) as u32
+            ((last_pts - first_pts) / fps as i64) as u32
         } else {
             0
         };
@@ -193,6 +193,28 @@ impl PacketBuffer {
         inner.total_bytes = 0;
         inner.sequence = 0;
         debug!("Buffer cleared");
+    }
+
+    /// Update buffer parameters at runtime (e.g. after a settings change).
+    pub fn reconfigure(
+        &self,
+        max_duration_secs: u32,
+        fps: u32,
+        bitrate_kbps: usize,
+        gop_secs: u32,
+    ) {
+        self.max_duration_secs
+            .store(max_duration_secs, Ordering::Relaxed);
+        self.fps.store(fps, Ordering::Relaxed);
+        self.gop_secs.store(gop_secs, Ordering::Relaxed);
+        let max_bytes = max_bytes_for(bitrate_kbps, max_duration_secs);
+        self.inner.write().max_bytes = max_bytes;
+        debug!(
+            "Buffer reconfigured: {}s @ {}fps, max {} MB",
+            max_duration_secs,
+            fps,
+            max_bytes / 1024 / 1024,
+        );
     }
 
     /// Store codec extradata (SPS/PPS) from the encoder
@@ -369,10 +391,8 @@ mod tests {
 
     #[test]
     fn test_bitrate_based_max_bytes() {
-        // 8000 kbps * 1024 / 8 = 1_024_000 bytes/sec
-        // * 60 seconds * 1.25 = 76_800_000
         let buffer = PacketBuffer::new(60, 30, 8000, 2);
         let stats = buffer.stats();
-        assert_eq!(stats.max_bytes, 8000 * 1024 / 8 * 60 * 5 / 4);
+        assert_eq!(stats.max_bytes, max_bytes_for(8000, 60));
     }
 }

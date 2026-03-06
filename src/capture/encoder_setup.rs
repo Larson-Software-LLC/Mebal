@@ -69,7 +69,7 @@ fn build_encoder(
         encoder.set_time_base(ffmpeg_next::Rational::new(1, config.fps as i32));
         encoder.set_frame_rate(Some(ffmpeg_next::Rational::new(config.fps as i32, 1)));
         encoder.set_bit_rate(config.bitrate_kbps * 1000);
-        encoder.set_gop(config.fps * 2); // Keyframe every 2 seconds
+        encoder.set_gop(config.fps * crate::config::GOP_INTERVAL_SECS);
 
         // Codec-specific options
         let mut opts = ffmpeg_next::Dictionary::new();

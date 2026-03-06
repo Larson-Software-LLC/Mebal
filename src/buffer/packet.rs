@@ -2,20 +2,28 @@
 // All rights reserved.
 // This source code is proprietary and confidential.
 
-//! Packet representation for encoded video data
+//! Packet representation for encoded media data
 
 use bytes::Bytes;
+use std::fmt;
 use std::time::Instant;
 
-/// Type of packet
+/// Type of media packet
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PacketType {
     /// Video frame data (H.264/H.265)
     Video,
-    /// Audio data (AAC/Opus)
+    /// Audio data (AAC)
     Audio,
-    /// End of stream marker
-    EndOfStream,
+}
+
+impl fmt::Display for PacketType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Video => f.write_str("video"),
+            Self::Audio => f.write_str("audio"),
+        }
+    }
 }
 
 /// A packet of encoded media data
@@ -25,24 +33,24 @@ pub struct Packet {
     pub data: Bytes,
     /// Type of packet
     pub packet_type: PacketType,
-    /// Timestamp when packet was captured
+    /// Wall-clock timestamp when packet was captured
     pub timestamp: Instant,
-    /// Presentation timestamp (in stream timebase)
+    /// Presentation timestamp (in buffer timebase: 1/fps)
     pub pts: i64,
-    /// Decode timestamp (in stream timebase)
+    /// Decode timestamp (in buffer timebase: 1/fps)
     pub dts: i64,
     /// Duration (in stream timebase)
     pub duration: i64,
-    /// Is this a keyframe
+    /// Whether this is a keyframe
     pub is_keyframe: bool,
-    /// Sequence number for ordering
+    /// Sequence number assigned by the buffer
     pub sequence: u64,
-    /// Stream index (for multi-stream files)
+    /// Stream index from the encoder
     pub stream_index: usize,
 }
 
 impl Packet {
-    /// Create a new packet
+    /// Create a new packet with default timestamps
     pub fn new(data: impl Into<Bytes>, packet_type: PacketType, timestamp: Instant) -> Self {
         Self {
             data: data.into(),
@@ -57,43 +65,25 @@ impl Packet {
         }
     }
 
-    /// Create a video packet from FFmpeg packet data
+    /// Create a packet from an FFmpeg encoded packet
     pub fn from_ffmpeg_packet(
         ffmpeg_packet: &ffmpeg_next::codec::packet::Packet,
         packet_type: PacketType,
     ) -> Self {
-        let data = Bytes::copy_from_slice(ffmpeg_packet.data().unwrap_or(&[]));
-        let is_keyframe = ffmpeg_packet.is_key();
-
         Self {
-            data,
+            data: Bytes::copy_from_slice(ffmpeg_packet.data().unwrap_or(&[])),
             packet_type,
             timestamp: Instant::now(),
             pts: ffmpeg_packet.pts().unwrap_or(0),
             dts: ffmpeg_packet.dts().unwrap_or(0),
             duration: ffmpeg_packet.duration(),
-            is_keyframe,
+            is_keyframe: ffmpeg_packet.is_key(),
             sequence: 0,
             stream_index: ffmpeg_packet.stream(),
         }
     }
 
-    /// Check if this is a video packet
-    pub fn is_video(&self) -> bool {
-        self.packet_type == PacketType::Video
-    }
-
-    /// Check if this is an audio packet
-    pub fn is_audio(&self) -> bool {
-        self.packet_type == PacketType::Audio
-    }
-
-    /// Get packet size in bytes
-    pub fn size(&self) -> usize {
-        self.data.len()
-    }
-
-    /// Convert to FFmpeg packet for writing
+    /// Convert to an FFmpeg packet for muxing
     pub fn to_ffmpeg_packet(&self) -> ffmpeg_next::codec::packet::Packet {
         use ffmpeg_next::codec::packet::Packet as FfmpegPacket;
 
@@ -107,8 +97,8 @@ impl Packet {
     }
 }
 
-impl std::fmt::Debug for Packet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Packet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Packet")
             .field("type", &self.packet_type)
             .field("size", &self.data.len())
@@ -120,48 +110,41 @@ impl std::fmt::Debug for Packet {
     }
 }
 
-/// Extract H.264 NAL unit type from packet data
-pub fn h264_nal_unit_type(data: &[u8]) -> Option<u8> {
-    if data.len() < 5 {
-        return None;
-    }
-
-    // Check for start code (0x00000001 or 0x000001)
-    let offset = if data.starts_with(&[0x00, 0x00, 0x00, 0x01]) {
-        4
-    } else if data.starts_with(&[0x00, 0x00, 0x01]) {
-        3
-    } else {
-        return None;
-    };
-
-    // NAL unit type is in the lower 5 bits of the first byte after start code
-    Some(data[offset] & 0x1F)
-}
-
-/// Check if NAL unit type is a keyframe (IDR slice)
-pub fn is_h264_keyframe_nal(nal_type: u8) -> bool {
-    nal_type == 5 // IDR slice
-}
-
-/// Check if packet contains H.264 SPS (Sequence Parameter Set)
-pub fn is_h264_sps(data: &[u8]) -> bool {
-    h264_nal_unit_type(data).map(|t| t == 7).unwrap_or(false)
-}
-
-/// Check if packet contains H.264 PPS (Picture Parameter Set)
-pub fn is_h264_pps(data: &[u8]) -> bool {
-    h264_nal_unit_type(data).map(|t| t == 8).unwrap_or(false)
-}
-
-/// Check if packet contains H.264 SEI (Supplemental Enhancement Information)
-pub fn is_h264_sei(data: &[u8]) -> bool {
-    h264_nal_unit_type(data).map(|t| t == 6).unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // H.264 NAL unit helpers (test-only; promote to pub when needed in production)
+    const H264_NAL_TYPE_MASK: u8 = 0x1F;
+    const H264_NAL_IDR: u8 = 5;
+    const H264_NAL_SPS: u8 = 7;
+    const H264_NAL_PPS: u8 = 8;
+
+    fn h264_nal_unit_type(data: &[u8]) -> Option<u8> {
+        if data.len() < 5 {
+            return None;
+        }
+        let offset = if data.starts_with(&[0x00, 0x00, 0x00, 0x01]) {
+            4
+        } else if data.starts_with(&[0x00, 0x00, 0x01]) {
+            3
+        } else {
+            return None;
+        };
+        Some(data[offset] & H264_NAL_TYPE_MASK)
+    }
+
+    fn is_h264_keyframe_nal(nal_type: u8) -> bool {
+        nal_type == H264_NAL_IDR
+    }
+
+    fn is_h264_sps(data: &[u8]) -> bool {
+        h264_nal_unit_type(data) == Some(H264_NAL_SPS)
+    }
+
+    fn is_h264_pps(data: &[u8]) -> bool {
+        h264_nal_unit_type(data) == Some(H264_NAL_PPS)
+    }
 
     #[test]
     fn test_packet_creation() {
@@ -169,8 +152,14 @@ mod tests {
         let packet = Packet::new(data.clone(), PacketType::Video, Instant::now());
 
         assert_eq!(packet.data.as_ref(), data.as_slice());
-        assert!(packet.is_video());
-        assert_eq!(packet.size(), 5);
+        assert_eq!(packet.packet_type, PacketType::Video);
+        assert_eq!(packet.data.len(), 5);
+    }
+
+    #[test]
+    fn test_packet_type_display() {
+        assert_eq!(PacketType::Video.to_string(), "video");
+        assert_eq!(PacketType::Audio.to_string(), "audio");
     }
 
     #[test]

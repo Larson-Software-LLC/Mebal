@@ -9,25 +9,12 @@
 //!
 //! Configuration is stored in `%APPDATA%\mebal\config.toml`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
+use mebal::{AppState, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
-
-mod app;
-mod buffer;
-mod capture;
-mod config;
-mod error;
-mod hotkey;
-mod writer;
-
-use app::AppState;
-use capture::CaptureManager;
-use capture::audio::AudioCaptureManager;
-use config::Config;
-use hotkey::HotkeyManager;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -81,10 +68,9 @@ async fn main() -> Result<()> {
 
     // Handle list commands
     if args.list_encoders {
-        // Initialize FFmpeg so we can probe encoders
-        ffmpeg_next::init().ok();
+        mebal::init_ffmpeg();
         println!("Available encoders:");
-        for (name, available) in capture::encoder_setup::get_encoder_info() {
+        for (name, available) in mebal::capture::encoder_setup::get_encoder_info() {
             let status = if available { "Y" } else { "N" };
             println!("  [{}] {}", status, name);
         }
@@ -180,18 +166,16 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Set up hotkey handler
+    // Set up hotkey handler (hook runs on its own thread)
     let hotkey_state = Arc::clone(&app_state);
-    let mut hotkey_manager = HotkeyManager::new(&config.hotkey)?;
-
-    hotkey_manager.on_trigger(move || {
+    let _hotkey_manager = HotkeyManager::new(&config.hotkey, move || {
         let state = Arc::clone(&hotkey_state);
         tokio::spawn(async move {
             if let Err(e) = state.save_replay().await {
                 error!("Failed to save replay: {}", e);
             }
         });
-    });
+    })?;
 
     info!("");
     info!("========================================");
@@ -213,13 +197,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Run hotkey manager (blocks until error or shutdown)
+    // Wait until a task ends or Ctrl+C (hotkey hook runs on its own thread)
     tokio::select! {
-        result = hotkey_manager.run() => {
-            if let Err(e) = result {
-                error!("Hotkey manager error: {}", e);
-            }
-        }
         _ = capture_handle => {
             warn!("Capture task ended");
         }
@@ -234,8 +213,7 @@ async fn main() -> Result<()> {
     // Signal capture to stop
     cancel_token.cancel();
 
-    // Cleanup
-    let _ = hotkey_manager.unregister();
+    // _hotkey_manager is dropped here, which unregisters the hotkey
 
     info!("Mebal shutting down...");
     Ok(())

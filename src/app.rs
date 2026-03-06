@@ -18,32 +18,25 @@ use crate::writer::VideoWriter;
 
 /// Application state shared across components
 pub struct AppState {
-    /// The circular buffer storing encoded video packets
+    /// The circular buffer storing encoded media packets
     pub packet_buffer: Arc<PacketBuffer>,
-    /// Configuration settings (behind RwLock for runtime updates)
+    /// Current configuration (behind RwLock for runtime updates)
     config: parking_lot::RwLock<Config>,
-    /// Whether a save operation is currently in progress
+    /// Guard preventing concurrent save operations
     saving: AtomicBool,
 }
 
 impl AppState {
     /// Create a new `AppState` from the given configuration.
-    ///
-    /// The buffer is sized using the combined video + audio bitrate
-    /// when audio is enabled.
     pub fn new(config: Config) -> Self {
-        let total_bitrate = if config.audio_enabled {
-            config.bitrate_kbps + config.audio_bitrate_kbps
-        } else {
-            config.bitrate_kbps
-        };
+        let total_bitrate = config.total_bitrate_kbps();
 
         Self {
             packet_buffer: Arc::new(PacketBuffer::new(
                 config.buffer_duration_secs,
                 config.fps,
                 total_bitrate,
-                2, // GOP interval in seconds (matches encoder_setup: fps * 2)
+                crate::config::GOP_INTERVAL_SECS,
             )),
             config: parking_lot::RwLock::new(config),
             saving: AtomicBool::new(false),
@@ -58,7 +51,6 @@ impl AppState {
     /// Update the configuration, validate it, and persist to disk.
     ///
     /// Returns `Ok(true)` when capture-affecting settings changed
-    /// (resolution, fps, encoder, bitrate, capture_source, audio_enabled)
     /// and a capture restart is needed.
     pub fn update_config(&self, new: Config) -> Result<bool> {
         new.validate()?;
@@ -70,11 +62,23 @@ impl AppState {
             || old.encoder != new.encoder
             || old.bitrate_kbps != new.bitrate_kbps
             || old.capture_source != new.capture_source
-            || old.audio_enabled != new.audio_enabled;
+            || old.audio_enabled != new.audio_enabled
+            || old.buffer_duration_secs != new.buffer_duration_secs;
 
         *self.config.write() = new;
 
         Ok(needs_restart)
+    }
+
+    /// Update the packet buffer parameters to match the current config.
+    pub fn reconfigure_buffer(&self) {
+        let config = self.config();
+        self.packet_buffer.reconfigure(
+            config.buffer_duration_secs,
+            config.fps,
+            config.total_bitrate_kbps(),
+            crate::config::GOP_INTERVAL_SECS,
+        );
     }
 
     /// Whether a save operation is currently in progress.
@@ -84,7 +88,6 @@ impl AppState {
 
     /// Save the current replay buffer to a file.
     pub async fn save_replay(&self) -> Result<()> {
-        // Check if already saving
         if self.saving.swap(true, Ordering::SeqCst) {
             warn!("Save already in progress, ignoring trigger");
             return Ok(());
@@ -97,7 +100,6 @@ impl AppState {
         let filename = format!("{}_{}.mp4", config.output_prefix, timestamp);
         let output_path = std::path::Path::new(&config.output_directory).join(&filename);
 
-        // Ensure output directory exists
         if let Err(e) = std::fs::create_dir_all(&config.output_directory) {
             self.saving.store(false, Ordering::SeqCst);
             return Err(e).with_context(|| {
@@ -108,7 +110,6 @@ impl AppState {
             });
         }
 
-        // Get packets from buffer
         let packets = self
             .packet_buffer
             .get_packets_for_duration(config.save_duration_secs);
@@ -119,15 +120,11 @@ impl AppState {
             return Ok(());
         }
 
-        // Get codec extradata
         let extradata = self.packet_buffer.get_codec_extradata().unwrap_or_default();
-
-        // Get audio params (None if audio capture never started)
         let audio_params = self.packet_buffer.get_audio_params();
 
         info!("Writing {} packets to {:?}", packets.len(), output_path);
 
-        // Write video file in a blocking task
         let path = output_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let writer = VideoWriter::new(&config, extradata, audio_params);
@@ -136,15 +133,9 @@ impl AppState {
         .await;
 
         match result {
-            Ok(Ok(_)) => {
-                info!("Replay saved to {:?}", output_path);
-            }
-            Ok(Err(e)) => {
-                error!("Failed to write replay: {}", e);
-            }
-            Err(e) => {
-                error!("Write task panicked: {}", e);
-            }
+            Ok(Ok(_)) => info!("Replay saved to {:?}", output_path),
+            Ok(Err(e)) => error!("Failed to write replay: {}", e),
+            Err(e) => error!("Write task panicked: {}", e),
         }
 
         self.saving.store(false, Ordering::SeqCst);

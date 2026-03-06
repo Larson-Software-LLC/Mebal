@@ -4,19 +4,19 @@
 
 //! Hotkey string parser
 //!
-//! Parses hotkey strings like "Ctrl+Shift+F9" into global_hotkey::HotKey objects.
+//! Parses hotkey strings like "Ctrl+Shift+F9" into livesplit_hotkey::Hotkey objects.
 
 use anyhow::Result;
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use livesplit_hotkey::{Hotkey, KeyCode, Modifiers};
 use tracing::debug;
 
-/// Parse a hotkey string into a HotKey
+/// Parse a hotkey string into a Hotkey
 ///
 /// Supported formats:
 /// - Single keys: "F9", "Space", "Escape"
 /// - With modifiers: "Ctrl+F9", "Alt+Tab", "Ctrl+Shift+R"
 /// - Platform-specific: "Command+S" (macOS), "Super+L" (Linux)
-pub fn parse_hotkey(s: &str) -> Result<HotKey> {
+pub fn parse_hotkey(s: &str) -> Result<Hotkey> {
     let parts: Vec<&str> = s.split('+').map(|p| p.trim()).collect();
 
     if parts.is_empty() {
@@ -38,122 +38,125 @@ pub fn parse_hotkey(s: &str) -> Result<HotKey> {
         s, key_code, modifiers
     );
 
-    Ok(HotKey::new(Some(modifiers), key_code))
+    Ok(Hotkey {
+        key_code,
+        modifiers,
+    })
 }
 
 /// Parse a key code string
-fn parse_key_code(s: &str) -> Result<Code> {
+fn parse_key_code(s: &str) -> Result<KeyCode> {
     // Handle special key names
     let code = match s.to_lowercase().as_str() {
         // Function keys
-        "f1" => Code::F1,
-        "f2" => Code::F2,
-        "f3" => Code::F3,
-        "f4" => Code::F4,
-        "f5" => Code::F5,
-        "f6" => Code::F6,
-        "f7" => Code::F7,
-        "f8" => Code::F8,
-        "f9" => Code::F9,
-        "f10" => Code::F10,
-        "f11" => Code::F11,
-        "f12" => Code::F12,
-        "f13" => Code::F13,
-        "f14" => Code::F14,
-        "f15" => Code::F15,
-        "f16" => Code::F16,
-        "f17" => Code::F17,
-        "f18" => Code::F18,
-        "f19" => Code::F19,
-        "f20" => Code::F20,
-        "f21" => Code::F21,
-        "f22" => Code::F22,
-        "f23" => Code::F23,
-        "f24" => Code::F24,
+        "f1" => KeyCode::F1,
+        "f2" => KeyCode::F2,
+        "f3" => KeyCode::F3,
+        "f4" => KeyCode::F4,
+        "f5" => KeyCode::F5,
+        "f6" => KeyCode::F6,
+        "f7" => KeyCode::F7,
+        "f8" => KeyCode::F8,
+        "f9" => KeyCode::F9,
+        "f10" => KeyCode::F10,
+        "f11" => KeyCode::F11,
+        "f12" => KeyCode::F12,
+        "f13" => KeyCode::F13,
+        "f14" => KeyCode::F14,
+        "f15" => KeyCode::F15,
+        "f16" => KeyCode::F16,
+        "f17" => KeyCode::F17,
+        "f18" => KeyCode::F18,
+        "f19" => KeyCode::F19,
+        "f20" => KeyCode::F20,
+        "f21" => KeyCode::F21,
+        "f22" => KeyCode::F22,
+        "f23" => KeyCode::F23,
+        "f24" => KeyCode::F24,
 
         // Number keys
-        "0" | "digit0" => Code::Digit0,
-        "1" | "digit1" => Code::Digit1,
-        "2" | "digit2" => Code::Digit2,
-        "3" | "digit3" => Code::Digit3,
-        "4" | "digit4" => Code::Digit4,
-        "5" | "digit5" => Code::Digit5,
-        "6" | "digit6" => Code::Digit6,
-        "7" | "digit7" => Code::Digit7,
-        "8" | "digit8" => Code::Digit8,
-        "9" | "digit9" => Code::Digit9,
+        "0" | "digit0" => KeyCode::Digit0,
+        "1" | "digit1" => KeyCode::Digit1,
+        "2" | "digit2" => KeyCode::Digit2,
+        "3" | "digit3" => KeyCode::Digit3,
+        "4" | "digit4" => KeyCode::Digit4,
+        "5" | "digit5" => KeyCode::Digit5,
+        "6" | "digit6" => KeyCode::Digit6,
+        "7" | "digit7" => KeyCode::Digit7,
+        "8" | "digit8" => KeyCode::Digit8,
+        "9" | "digit9" => KeyCode::Digit9,
 
         // Letter keys
-        "a" => Code::KeyA,
-        "b" => Code::KeyB,
-        "c" => Code::KeyC,
-        "d" => Code::KeyD,
-        "e" => Code::KeyE,
-        "f" => Code::KeyF,
-        "g" => Code::KeyG,
-        "h" => Code::KeyH,
-        "i" => Code::KeyI,
-        "j" => Code::KeyJ,
-        "k" => Code::KeyK,
-        "l" => Code::KeyL,
-        "m" => Code::KeyM,
-        "n" => Code::KeyN,
-        "o" => Code::KeyO,
-        "p" => Code::KeyP,
-        "q" => Code::KeyQ,
-        "r" => Code::KeyR,
-        "s" => Code::KeyS,
-        "t" => Code::KeyT,
-        "u" => Code::KeyU,
-        "v" => Code::KeyV,
-        "w" => Code::KeyW,
-        "x" => Code::KeyX,
-        "y" => Code::KeyY,
-        "z" => Code::KeyZ,
+        "a" => KeyCode::KeyA,
+        "b" => KeyCode::KeyB,
+        "c" => KeyCode::KeyC,
+        "d" => KeyCode::KeyD,
+        "e" => KeyCode::KeyE,
+        "f" => KeyCode::KeyF,
+        "g" => KeyCode::KeyG,
+        "h" => KeyCode::KeyH,
+        "i" => KeyCode::KeyI,
+        "j" => KeyCode::KeyJ,
+        "k" => KeyCode::KeyK,
+        "l" => KeyCode::KeyL,
+        "m" => KeyCode::KeyM,
+        "n" => KeyCode::KeyN,
+        "o" => KeyCode::KeyO,
+        "p" => KeyCode::KeyP,
+        "q" => KeyCode::KeyQ,
+        "r" => KeyCode::KeyR,
+        "s" => KeyCode::KeyS,
+        "t" => KeyCode::KeyT,
+        "u" => KeyCode::KeyU,
+        "v" => KeyCode::KeyV,
+        "w" => KeyCode::KeyW,
+        "x" => KeyCode::KeyX,
+        "y" => KeyCode::KeyY,
+        "z" => KeyCode::KeyZ,
 
         // Special keys
-        "space" | " " => Code::Space,
-        "enter" | "return" => Code::Enter,
-        "escape" | "esc" => Code::Escape,
-        "tab" => Code::Tab,
-        "backspace" => Code::Backspace,
-        "delete" | "del" => Code::Delete,
-        "insert" | "ins" => Code::Insert,
-        "home" => Code::Home,
-        "end" => Code::End,
-        "pageup" | "page_up" => Code::PageUp,
-        "pagedown" | "page_down" => Code::PageDown,
+        "space" | " " => KeyCode::Space,
+        "enter" | "return" => KeyCode::Enter,
+        "escape" | "esc" => KeyCode::Escape,
+        "tab" => KeyCode::Tab,
+        "backspace" => KeyCode::Backspace,
+        "delete" | "del" => KeyCode::Delete,
+        "insert" | "ins" => KeyCode::Insert,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" | "page_up" => KeyCode::PageUp,
+        "pagedown" | "page_down" => KeyCode::PageDown,
 
         // Arrow keys
-        "up" | "arrowup" => Code::ArrowUp,
-        "down" | "arrowdown" => Code::ArrowDown,
-        "left" | "arrowleft" => Code::ArrowLeft,
-        "right" | "arrowright" => Code::ArrowRight,
+        "up" | "arrowup" => KeyCode::ArrowUp,
+        "down" | "arrowdown" => KeyCode::ArrowDown,
+        "left" | "arrowleft" => KeyCode::ArrowLeft,
+        "right" | "arrowright" => KeyCode::ArrowRight,
 
         // Numpad
-        "num0" | "numpad0" => Code::Numpad0,
-        "num1" | "numpad1" => Code::Numpad1,
-        "num2" | "numpad2" => Code::Numpad2,
-        "num3" | "numpad3" => Code::Numpad3,
-        "num4" | "numpad4" => Code::Numpad4,
-        "num5" | "numpad5" => Code::Numpad5,
-        "num6" | "numpad6" => Code::Numpad6,
-        "num7" | "numpad7" => Code::Numpad7,
-        "num8" | "numpad8" => Code::Numpad8,
-        "num9" | "numpad9" => Code::Numpad9,
+        "num0" | "numpad0" => KeyCode::Numpad0,
+        "num1" | "numpad1" => KeyCode::Numpad1,
+        "num2" | "numpad2" => KeyCode::Numpad2,
+        "num3" | "numpad3" => KeyCode::Numpad3,
+        "num4" | "numpad4" => KeyCode::Numpad4,
+        "num5" | "numpad5" => KeyCode::Numpad5,
+        "num6" | "numpad6" => KeyCode::Numpad6,
+        "num7" | "numpad7" => KeyCode::Numpad7,
+        "num8" | "numpad8" => KeyCode::Numpad8,
+        "num9" | "numpad9" => KeyCode::Numpad9,
 
         // Punctuation
-        "grave" | "`" | "~" => Code::Backquote,
-        "minus" | "-" | "_" => Code::Minus,
-        "equal" | "=" | "+" => Code::Equal,
-        "bracketleft" | "[" | "{" => Code::BracketLeft,
-        "bracketright" | "]" | "}" => Code::BracketRight,
-        "backslash" | "\\" | "|" => Code::Backslash,
-        "semicolon" | ";" | ":" => Code::Semicolon,
-        "quote" | "'" | "\"" => Code::Quote,
-        "comma" | "," | "<" => Code::Comma,
-        "period" | "." | ">" => Code::Period,
-        "slash" | "/" | "?" => Code::Slash,
+        "grave" | "`" | "~" => KeyCode::Backquote,
+        "minus" | "-" | "_" => KeyCode::Minus,
+        "equal" | "=" | "+" => KeyCode::Equal,
+        "bracketleft" | "[" | "{" => KeyCode::BracketLeft,
+        "bracketright" | "]" | "}" => KeyCode::BracketRight,
+        "backslash" | "\\" | "|" => KeyCode::Backslash,
+        "semicolon" | ";" | ":" => KeyCode::Semicolon,
+        "quote" | "'" | "\"" => KeyCode::Quote,
+        "comma" | "," | "<" => KeyCode::Comma,
+        "period" | "." | ">" => KeyCode::Period,
+        "slash" | "/" | "?" => KeyCode::Slash,
 
         _ => return Err(anyhow::anyhow!("Unknown key code: {}", s)),
     };
@@ -167,59 +170,11 @@ fn parse_modifier(s: &str) -> Result<Modifiers> {
         "ctrl" | "control" => Modifiers::CONTROL,
         "alt" | "option" => Modifiers::ALT,
         "shift" => Modifiers::SHIFT,
-        "super" | "win" | "windows" | "command" | "cmd" => Modifiers::SUPER,
+        "super" | "win" | "windows" | "command" | "cmd" => Modifiers::META,
         _ => return Err(anyhow::anyhow!("Unknown modifier: {}", s)),
     };
 
     Ok(modifier)
-}
-
-/// Format a HotKey back to string representation
-pub fn format_hotkey(hotkey: &HotKey) -> String {
-    let mut parts = Vec::new();
-
-    let modifiers = hotkey.mods;
-    if modifiers.contains(Modifiers::CONTROL) {
-        parts.push("Ctrl");
-    }
-    if modifiers.contains(Modifiers::ALT) {
-        parts.push("Alt");
-    }
-    if modifiers.contains(Modifiers::SHIFT) {
-        parts.push("Shift");
-    }
-    if modifiers.contains(Modifiers::SUPER) {
-        parts.push("Super");
-    }
-
-    let key_str = format_code(hotkey.key);
-    parts.push(&key_str);
-
-    parts.join("+")
-}
-
-/// Format a key code to string
-fn format_code(code: Code) -> String {
-    match code {
-        Code::F1 => "F1".to_string(),
-        Code::F2 => "F2".to_string(),
-        Code::F3 => "F3".to_string(),
-        Code::F4 => "F4".to_string(),
-        Code::F5 => "F5".to_string(),
-        Code::F6 => "F6".to_string(),
-        Code::F7 => "F7".to_string(),
-        Code::F8 => "F8".to_string(),
-        Code::F9 => "F9".to_string(),
-        Code::F10 => "F10".to_string(),
-        Code::F11 => "F11".to_string(),
-        Code::F12 => "F12".to_string(),
-        Code::Space => "Space".to_string(),
-        Code::Enter => "Enter".to_string(),
-        Code::Escape => "Escape".to_string(),
-        Code::Tab => "Tab".to_string(),
-        Code::Backspace => "Backspace".to_string(),
-        _ => format!("{:?}", code),
-    }
 }
 
 #[cfg(test)]
@@ -229,23 +184,23 @@ mod tests {
     #[test]
     fn test_parse_simple_hotkey() {
         let hotkey = parse_hotkey("F9").unwrap();
-        assert_eq!(hotkey.key, Code::F9);
-        assert!(hotkey.mods.is_empty());
+        assert_eq!(hotkey.key_code, KeyCode::F9);
+        assert!(hotkey.modifiers.is_empty());
     }
 
     #[test]
     fn test_parse_with_modifier() {
         let hotkey = parse_hotkey("Ctrl+F9").unwrap();
-        assert_eq!(hotkey.key, Code::F9);
-        assert!(hotkey.mods.contains(Modifiers::CONTROL));
+        assert_eq!(hotkey.key_code, KeyCode::F9);
+        assert!(hotkey.modifiers.contains(Modifiers::CONTROL));
     }
 
     #[test]
     fn test_parse_multiple_modifiers() {
         let hotkey = parse_hotkey("Ctrl+Shift+R").unwrap();
-        assert_eq!(hotkey.key, Code::KeyR);
-        assert!(hotkey.mods.contains(Modifiers::CONTROL));
-        assert!(hotkey.mods.contains(Modifiers::SHIFT));
+        assert_eq!(hotkey.key_code, KeyCode::KeyR);
+        assert!(hotkey.modifiers.contains(Modifiers::CONTROL));
+        assert!(hotkey.modifiers.contains(Modifiers::SHIFT));
     }
 
     #[test]

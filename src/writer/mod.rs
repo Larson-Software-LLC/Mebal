@@ -5,20 +5,18 @@
 //! Video file writer for saving replay clips
 use anyhow::{Context, Result};
 use std::path::Path;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::buffer::{AudioParams, Packet, PacketType};
 use crate::config::Config;
 
-/// Video parameters for output
+/// Video stream parameters for the output container
 #[derive(Debug, Clone)]
 pub struct VideoParams {
-    #[allow(unused)]
     pub width: u32,
     pub height: u32,
     pub fps: u32,
     pub bitrate_kbps: usize,
-    pub codec_name: String,
     pub extradata: Vec<u8>,
 }
 
@@ -30,23 +28,19 @@ pub struct VideoWriter {
 }
 
 impl VideoWriter {
-    /// Create a new video writer
     pub fn new(
         config: &Config,
         codec_extradata: Vec<u8>,
         audio_params: Option<AudioParams>,
     ) -> Self {
-        let video_params = VideoParams {
-            width: config.resolution.0,
-            height: config.resolution.1,
-            fps: config.fps,
-            bitrate_kbps: config.bitrate_kbps,
-            codec_name: config.encoder.clone().unwrap_or_else(|| "h264".to_string()),
-            extradata: codec_extradata,
-        };
-
         Self {
-            video_params,
+            video_params: VideoParams {
+                width: config.resolution.0,
+                height: config.resolution.1,
+                fps: config.fps,
+                bitrate_kbps: config.bitrate_kbps,
+                extradata: codec_extradata,
+            },
             audio_params,
             audio_bitrate_kbps: config.audio_bitrate_kbps,
         }
@@ -91,8 +85,7 @@ impl VideoWriter {
         let mut stream = output_ctx.add_stream(codec)?;
         let stream_index = stream.index();
 
-        // Set codec parameters directly on the stream's codecpar (bypassing the
-        // Parameters copy which loses codec_id on some ffmpeg-next versions)
+        // Set codec parameters via FFI (ffmpeg-next's Parameters loses codec_id)
         unsafe {
             let st = stream.as_mut_ptr();
             let codecpar = (*st).codecpar;
@@ -224,6 +217,9 @@ impl VideoWriter {
             .map(|p| p.dts)
             .unwrap_or(0);
 
+        // Guard: skip audio packets with non-monotonic DTS (stale session data).
+        let mut last_audio_dts: Option<i64> = None;
+
         for packet in &packets {
             match packet.packet_type {
                 PacketType::Video => {
@@ -245,10 +241,23 @@ impl VideoWriter {
                 }
                 PacketType::Audio => {
                     if let Some(audio_idx) = audio_stream_index {
+                        let rebased_dts = packet.dts - audio_dts_offset;
+
+                        if let Some(last) = last_audio_dts {
+                            if rebased_dts <= last {
+                                warn!(
+                                    "Skipping non-monotonic audio packet (DTS={}, last={})",
+                                    rebased_dts, last
+                                );
+                                continue;
+                            }
+                        }
+                        last_audio_dts = Some(rebased_dts);
+
                         let audio_tb = audio_stream_tb.unwrap();
                         let mut ffmpeg_pkt = packet.to_ffmpeg_packet();
                         ffmpeg_pkt.set_pts(Some(packet.pts - audio_pts_offset));
-                        ffmpeg_pkt.set_dts(Some(packet.dts - audio_dts_offset));
+                        ffmpeg_pkt.set_dts(Some(rebased_dts));
                         ffmpeg_pkt.set_stream(audio_idx);
                         ffmpeg_pkt.rescale_ts(buffer_time_base, audio_tb);
 
@@ -259,7 +268,6 @@ impl VideoWriter {
                             })?;
                     }
                 }
-                _ => {} // skip EndOfStream markers etc.
             }
         }
 
@@ -273,10 +281,7 @@ impl VideoWriter {
     }
 }
 
-/// Find first video keyframe in packet list
-///
-/// Only considers video packets — AAC audio packets are also marked as
-/// keyframes by FFmpeg, which would fool a type-agnostic check.
+/// Find the index of the first video keyframe (ignores audio keyframes).
 pub fn find_first_keyframe(packets: &[Packet]) -> Option<usize> {
     packets
         .iter()

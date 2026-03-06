@@ -9,7 +9,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 mebal = { path = ".." }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
-tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.35", features = ["full"] }

@@ -165,12 +165,14 @@ impl CaptureManager {
             }
         }
 
-        // Flush encoder
-        encoder.send_eof()?;
-        let mut encoded_packet = ffmpeg_next::Packet::empty();
-        while encoder.receive_packet(&mut encoded_packet).is_ok() {
-            let packet = Packet::from_ffmpeg_packet(&encoded_packet, PacketType::Video);
-            buffer.push(packet);
+        // Skip flush on cancel — avoids stale packets racing into a cleared buffer.
+        if !cancel.is_cancelled() {
+            encoder.send_eof()?;
+            let mut encoded_packet = ffmpeg_next::Packet::empty();
+            while encoder.receive_packet(&mut encoded_packet).is_ok() {
+                let packet = Packet::from_ffmpeg_packet(&encoded_packet, PacketType::Video);
+                buffer.push(packet);
+            }
         }
 
         info!("Capture loop ended after {} frames", frame_count);

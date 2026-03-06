@@ -22,8 +22,13 @@ async fn main() -> Result<()> {
     // Create default configuration
     let config = Config::default();
 
-    // Create the packet buffer (5 minutes @ 60fps, 8Mbps bitrate, 2s GOP)
-    let buffer = Arc::new(PacketBuffer::new(300, 60, config.bitrate_kbps, 2));
+    // Create the packet buffer (5 minutes @ 60fps, 8Mbps bitrate)
+    let buffer = Arc::new(PacketBuffer::new(
+        300,
+        60,
+        config.bitrate_kbps,
+        mebal::GOP_INTERVAL_SECS,
+    ));
     info!("Packet buffer created");
 
     // Create cancellation token for clean shutdown
@@ -52,8 +57,7 @@ async fn main() -> Result<()> {
     let hotkey_buffer = buffer.clone();
     let hotkey_config = config.clone();
 
-    let mut hotkey = HotkeyManager::new("F9")?;
-    hotkey.on_trigger(move || {
+    let _hotkey = HotkeyManager::new("F9", move || {
         let buffer = hotkey_buffer.clone();
         let config = hotkey_config.clone();
 
@@ -80,17 +84,12 @@ async fn main() -> Result<()> {
                 Err(e) => error!("Write task panicked: {}", e),
             }
         });
-    });
+    })?;
 
     info!("Press F9 to save a replay, Ctrl+C to exit");
 
-    // Run hotkey handler
+    // Wait for capture to end or Ctrl+C (hotkey hook runs on its own thread)
     tokio::select! {
-        result = hotkey.run() => {
-            if let Err(e) = result {
-                error!("Hotkey error: {}", e);
-            }
-        }
         _ = capture_handle => {
             info!("Capture ended");
         }

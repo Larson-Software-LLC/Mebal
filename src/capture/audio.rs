@@ -28,10 +28,9 @@ impl AudioCaptureManager {
         }
     }
 
-    /// Run the audio capture loop (blocking — call from spawn_blocking).
+    /// Run the audio capture loop (blocking — call from `spawn_blocking`).
     ///
-    /// `capture_start` is the shared epoch created in main so audio and video
-    /// PTS values are aligned.
+    /// `capture_start` is the shared epoch so audio and video PTS are aligned.
     pub fn run_blocking(
         &self,
         buffer: Arc<PacketBuffer>,
@@ -69,7 +68,7 @@ impl AudioCaptureManager {
 
         let mut encoder_ctx = ffmpeg_next::codec::Context::new_with_codec(aac_codec);
 
-        // Configure AAC encoder via unsafe FFI (ffmpeg-next doesn't expose audio encoder API fully)
+        // Configure AAC encoder via FFI (ffmpeg-next doesn't expose audio encoder fully)
         unsafe {
             let ctx = encoder_ctx.as_mut_ptr();
             (*ctx).sample_fmt = ffmpeg_sys_next::AVSampleFormat::AV_SAMPLE_FMT_FLTP;
@@ -149,8 +148,7 @@ impl AudioCaptureManager {
         stream.play().context("Failed to start cpal stream")?;
         info!("Audio capture started (WASAPI loopback)");
 
-        // Wall-clock offset in buffer timebase units at the moment audio starts,
-        // so encoder PTS (starting from 0) can be shifted to align with video PTS.
+        // PTS offset so audio aligns with video (both share capture_start epoch).
         let audio_base_pts =
             (capture_start.elapsed().as_secs_f64() * self.config.fps as f64) as i64;
 
@@ -245,11 +243,13 @@ impl AudioCaptureManager {
             }
         }
 
-        // Flush encoder
-        unsafe {
-            ffmpeg_sys_next::avcodec_send_frame(encoder_ctx.as_mut_ptr(), std::ptr::null());
+        // Skip flush on cancel — avoids stale packets racing into a cleared buffer.
+        if !cancel.is_cancelled() {
+            unsafe {
+                ffmpeg_sys_next::avcodec_send_frame(encoder_ctx.as_mut_ptr(), std::ptr::null());
+            }
+            self.drain_encoder(&encoder_ctx, &buffer, audio_base_pts, sample_rate, fps)?;
         }
-        self.drain_encoder(&encoder_ctx, &buffer, audio_base_pts, sample_rate, fps)?;
 
         // Cleanup
         unsafe {
@@ -261,12 +261,10 @@ impl AudioCaptureManager {
         Ok(())
     }
 
-    /// Drain all available packets from the encoder and push to buffer.
+    /// Drain encoded packets from the AAC encoder and push to the buffer.
     ///
-    /// Uses the encoder's own PTS (in 1/sample_rate timebase) converted to
-    /// buffer timebase (1/fps), offset by `audio_base_pts` for A/V alignment.
-    /// This guarantees monotonically increasing PTS even when multiple packets
-    /// are drained in a single call.
+    /// Converts encoder PTS (1/sample_rate) → buffer timebase (1/fps)
+    /// and adds `audio_base_pts` for A/V alignment.
     fn drain_encoder(
         &self,
         encoder_ctx: &ffmpeg_next::codec::Context,
@@ -299,6 +297,12 @@ impl AudioCaptureManager {
                 // then add the wall-clock offset captured when audio started.
                 let encoder_pts = (*pkt).pts;
                 let buffer_pts = audio_base_pts + encoder_pts * fps as i64 / sample_rate as i64;
+
+                // Skip AAC encoder priming delay packets (negative PTS).
+                if buffer_pts < 0 {
+                    ffmpeg_sys_next::av_packet_unref(pkt);
+                    continue;
+                }
 
                 let mut packet = Packet::new(data, PacketType::Audio, Instant::now());
                 packet.pts = buffer_pts;
