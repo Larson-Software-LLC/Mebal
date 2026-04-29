@@ -20,10 +20,7 @@ use crate::config::Config;
 /// 1. User-specified encoder from config
 /// 2. h264_nvenc (NVIDIA hardware)
 /// 3. libx264 (software fallback)
-pub fn create_encoder(
-    config: &Config,
-    _decoder: &ffmpeg_next::decoder::Video,
-) -> Result<(ffmpeg_next::encoder::Video, String)> {
+pub fn create_encoder(config: &Config) -> Result<(ffmpeg_next::encoder::Video, String)> {
     let width = config.resolution.0;
     let height = config.resolution.1;
 

@@ -3,32 +3,43 @@
 // This source code is proprietary and confidential.
 
 //! Shared application state for Mebal
-//!
-//! `AppState` holds the circular buffer, configuration, and save guard.
-//! Both the CLI binary and the Tauri GUI depend on this module.
 
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 
 use crate::buffer::PacketBuffer;
 use crate::config::Config;
 use crate::writer::VideoWriter;
 
-/// Application state shared across components
+#[derive(Clone)]
+pub struct App(Arc<AppState>);
+
+impl App {
+    pub fn new(config: Config) -> Self {
+        Self(Arc::new(AppState::new(config)))
+    }
+}
+
+impl std::ops::Deref for App {
+    type Target = AppState;
+    fn deref(&self) -> &AppState {
+        &self.0
+    }
+}
+
 pub struct AppState {
-    /// The circular buffer storing encoded media packets
     pub packet_buffer: Arc<PacketBuffer>,
-    /// Current configuration (behind RwLock for runtime updates)
-    config: parking_lot::RwLock<Config>,
-    /// Guard preventing concurrent save operations
+    config: ArcSwap<Config>,
     saving: AtomicBool,
+    tracker: TaskTracker,
 }
 
 impl AppState {
-    /// Create a new `AppState` from the given configuration.
-    pub fn new(config: Config) -> Self {
+    fn new(config: Config) -> Self {
         let total_bitrate = config.total_bitrate_kbps();
 
         Self {
@@ -38,25 +49,26 @@ impl AppState {
                 total_bitrate,
                 crate::config::GOP_INTERVAL_SECS,
             )),
-            config: parking_lot::RwLock::new(config),
+            config: ArcSwap::from_pointee(config),
             saving: AtomicBool::new(false),
+            tracker: TaskTracker::new(),
         }
     }
 
-    /// Return a clone of the current configuration.
-    pub fn config(&self) -> Config {
-        self.config.read().clone()
+    pub fn config(&self) -> Arc<Config> {
+        self.config.load_full()
     }
 
-    /// Update the configuration, validate it, and persist to disk.
-    ///
-    /// Returns `Ok(true)` when capture-affecting settings changed
-    /// and a capture restart is needed.
+    pub fn tracker(&self) -> &TaskTracker {
+        &self.tracker
+    }
+
+    /// Returns `Ok(true)` when a capture restart is needed.
     pub fn update_config(&self, new: Config) -> Result<bool> {
         new.validate()?;
         new.save()?;
 
-        let old = self.config.read().clone();
+        let old = self.config.load();
         let needs_restart = old.resolution != new.resolution
             || old.fps != new.fps
             || old.encoder != new.encoder
@@ -65,12 +77,11 @@ impl AppState {
             || old.audio_enabled != new.audio_enabled
             || old.buffer_duration_secs != new.buffer_duration_secs;
 
-        *self.config.write() = new;
+        self.config.store(Arc::new(new));
 
         Ok(needs_restart)
     }
 
-    /// Update the packet buffer parameters to match the current config.
     pub fn reconfigure_buffer(&self) {
         let config = self.config();
         self.packet_buffer.reconfigure(
@@ -81,12 +92,10 @@ impl AppState {
         );
     }
 
-    /// Whether a save operation is currently in progress.
     pub fn is_saving(&self) -> bool {
         self.saving.load(Ordering::SeqCst)
     }
 
-    /// Save the current replay buffer to a file.
     pub async fn save_replay(&self) -> Result<()> {
         if self.saving.swap(true, Ordering::SeqCst) {
             warn!("Save already in progress, ignoring trigger");

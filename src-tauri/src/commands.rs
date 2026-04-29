@@ -15,7 +15,7 @@ pub struct EncoderInfo {
 
 #[tauri::command]
 pub fn get_config(state: State<'_, TauriAppState>) -> Config {
-    state.inner.config()
+    (*state.inner.config()).clone()
 }
 
 #[tauri::command]
@@ -30,7 +30,7 @@ pub fn set_config(
         .map_err(|e| e.to_string())?;
 
     if needs_restart {
-        let config = state.inner.config();
+        let config = (*state.inner.config()).clone();
         state.restart_with_config(config);
         let _ = window.emit("capture-state-changed", true);
     }

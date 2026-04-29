@@ -2,7 +2,7 @@
 // All rights reserved.
 // This source code is proprietary and confidential.
 
-use mebal::{AppState, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
+use mebal::{App, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::sync::Arc;
@@ -10,14 +10,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 
-/// Tauri-managed application state wrapping the core library AppState.
 pub struct TauriAppState {
-    pub inner: Arc<AppState>,
+    pub inner: App,
     cancel_token: Mutex<Option<CancellationToken>>,
     capturing: AtomicBool,
     hotkey_manager: Mutex<Option<HotkeyManager>>,
+    capture_threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    pub task_tracker: TaskTracker,
 }
 
 #[derive(Clone, Serialize)]
@@ -35,14 +37,15 @@ pub struct StatusResponse {
 impl TauriAppState {
     pub fn new(config: Config) -> Self {
         Self {
-            inner: Arc::new(AppState::new(config)),
+            inner: App::new(config),
             cancel_token: Mutex::new(None),
             capturing: AtomicBool::new(false),
             hotkey_manager: Mutex::new(None),
+            capture_threads: Mutex::new(Vec::new()),
+            task_tracker: TaskTracker::new(),
         }
     }
 
-    /// Store the hotkey manager so it stays alive (and can be re-registered).
     pub fn set_hotkey_manager(&self, manager: HotkeyManager) {
         *self.hotkey_manager.lock() = Some(manager);
     }
@@ -64,7 +67,6 @@ impl TauriAppState {
         }
     }
 
-    /// Start video + audio capture tasks.
     pub fn start_capture(&self) -> anyhow::Result<()> {
         if self.is_capturing() {
             return Ok(());
@@ -74,11 +76,12 @@ impl TauriAppState {
         let cancel = CancellationToken::new();
         let capture_start = Instant::now();
 
-        // Video capture
+        let mut threads = self.capture_threads.lock();
+
         let buffer = Arc::clone(&self.inner.packet_buffer);
         let video_cancel = cancel.clone();
-        let video_config = config.clone();
-        std::thread::spawn(move || match CaptureManager::new(&video_config) {
+        let video_config = (*config).clone();
+        let video_handle = std::thread::spawn(move || match CaptureManager::new(&video_config) {
             Ok(capture) => {
                 if let Err(e) = capture.run_blocking(buffer, video_cancel, capture_start) {
                     error!("Capture error: {}", e);
@@ -88,18 +91,19 @@ impl TauriAppState {
                 error!("Failed to create capture manager: {}", e);
             }
         });
+        threads.push(video_handle);
 
-        // Audio capture
         if config.audio_enabled {
             let buffer = Arc::clone(&self.inner.packet_buffer);
             let audio_cancel = cancel.clone();
-            let audio_config = config.clone();
-            std::thread::spawn(move || {
+            let audio_config = (*config).clone();
+            let audio_handle = std::thread::spawn(move || {
                 let audio = AudioCaptureManager::new(&audio_config);
                 if let Err(e) = audio.run_blocking(buffer, audio_cancel, capture_start) {
                     warn!("Audio capture failed: {} — continuing video-only", e);
                 }
             });
+            threads.push(audio_handle);
         }
 
         *self.cancel_token.lock() = Some(cancel);
@@ -108,16 +112,20 @@ impl TauriAppState {
         Ok(())
     }
 
-    /// Stop capture by cancelling the token.
     pub fn stop_capture(&self) {
         if let Some(token) = self.cancel_token.lock().take() {
             token.cancel();
         }
+
+        let threads: Vec<_> = self.capture_threads.lock().drain(..).collect();
+        for handle in threads {
+            let _ = handle.join();
+        }
+
         self.capturing.store(false, Ordering::SeqCst);
         info!("Capture stopped");
     }
 
-    /// Stop capture, reconfigure the buffer, and restart with the current config.
     pub fn restart_with_config(&self, _config: Config) {
         self.stop_capture();
         self.inner.reconfigure_buffer();
@@ -128,13 +136,16 @@ impl TauriAppState {
     }
 }
 
-/// Polls buffer status every second and emits `buffer-status` events.
-pub async fn status_poll_loop(handle: &AppHandle) {
+pub async fn status_poll_loop(handle: &AppHandle, cancel: CancellationToken) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
-        interval.tick().await;
-        let ts = handle.state::<TauriAppState>();
-        let status = ts.status();
-        let _ = handle.emit("buffer-status", &status);
+        tokio::select! {
+            _ = interval.tick() => {
+                let ts = handle.state::<TauriAppState>();
+                let status = ts.status();
+                let _ = handle.emit("buffer-status", &status);
+            }
+            _ = cancel.cancelled() => break,
+        }
     }
 }

@@ -221,23 +221,23 @@ fn config_validation_rejects_save_exceeding_buffer() {
 #[tokio::test]
 async fn save_guard_prevents_concurrent_saves() {
     let config = test_config();
-    let state = Arc::new(mebal::AppState::new(config));
+    let app = mebal::App::new(config);
 
     // Fill buffer so save_replay has packets to work with
-    fill_buffer(&state.packet_buffer, 10, 60, 60, false);
+    fill_buffer(&app.packet_buffer, 10, 60, 60, false);
 
-    assert!(!state.is_saving(), "should not be saving initially");
+    assert!(!app.is_saving(), "should not be saving initially");
 
     // First save should proceed (it will fail at the writer since we have no
     // real codec extradata, but the guard behaviour is what we're testing)
-    let s1 = Arc::clone(&state);
+    let s1 = app.clone();
     let h1 = tokio::spawn(async move { s1.save_replay().await });
 
     // Give the first save a moment to set the guard
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // While the first is in progress, a second call should be a no-op
-    let s2 = Arc::clone(&state);
+    let s2 = app.clone();
     let result = s2.save_replay().await;
     assert!(result.is_ok(), "concurrent save should succeed (no-op)");
 
@@ -245,7 +245,7 @@ async fn save_guard_prevents_concurrent_saves() {
     let _ = h1.await;
 
     // Guard should be released
-    assert!(!state.is_saving(), "guard should be released after save");
+    assert!(!app.is_saving(), "guard should be released after save");
 }
 
 // ---------------------------------------------------------------------------

@@ -2,22 +2,23 @@
 // All rights reserved.
 // This source code is proprietary and confidential.
 
-//! Video capture module using FFmpeg gdigrab
+//! Video capture module using DXGI Desktop Duplication
 //!
-//! Captures the Windows desktop using FFmpeg's gdigrab input device,
-//! decodes frames, scales BGR0 -> NV12, encodes with NVENC (or libx264 fallback),
-//! and pushes encoded packets into the shared buffer.
+//! Captures the Windows desktop via DXGI (GPU compositor), scales BGRA -> NV12,
+//! encodes with NVENC (or libx264 fallback), and pushes encoded packets into
+//! the shared buffer.
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::buffer::{Packet, PacketBuffer, PacketType};
 use crate::config::Config;
 
 pub mod audio;
+mod dxgi;
 pub mod encoder_setup;
 
 /// Manages continuous video capture
@@ -29,9 +30,8 @@ impl CaptureManager {
     /// Create a new capture manager
     pub fn new(config: &Config) -> Result<Self> {
         ffmpeg_next::init().context("Failed to initialize FFmpeg")?;
-        ffmpeg_next::device::register_all();
 
-        info!("FFmpeg initialized, devices registered");
+        info!("FFmpeg initialized");
 
         Ok(Self {
             config: config.clone(),
@@ -39,44 +39,31 @@ impl CaptureManager {
     }
 
     /// Run the capture loop (blocking — call from spawn_blocking)
-    ///
-    /// This opens gdigrab, decodes, scales, encodes, and pushes packets into the buffer.
-    /// `capture_start` is a shared epoch so audio and video PTS are aligned.
     pub fn run_blocking(
         &self,
         buffer: Arc<PacketBuffer>,
         cancel: CancellationToken,
         capture_start: Instant,
     ) -> Result<()> {
-        // --- Open gdigrab input ---
-        let mut input_ctx = self.open_gdigrab_input()?;
+        let output_index = self
+            .config
+            .capture_source
+            .as_deref()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
 
-        // Find video stream
-        let video_stream_index = input_ctx
-            .streams()
-            .best(ffmpeg_next::media::Type::Video)
-            .context("No video stream found in gdigrab input")?
-            .index();
-
-        let stream = input_ctx.stream(video_stream_index).unwrap();
-        let decoder_params = stream.parameters();
-
-        // Create decoder
-        let decoder_codec =
-            ffmpeg_next::decoder::find(decoder_params.id()).context("Failed to find decoder")?;
-        let mut decoder_ctx = ffmpeg_next::codec::Context::new_with_codec(decoder_codec);
-        decoder_ctx.set_parameters(decoder_params)?;
-        let mut decoder = decoder_ctx.decoder().video()?;
+        let mut dxgi = dxgi::DxgiCapture::new(output_index)
+            .context("Failed to initialize DXGI capture")?;
 
         info!(
-            "Decoder opened: {}x{} {:?}",
-            decoder.width(),
-            decoder.height(),
-            decoder.format()
+            "DXGI capture opened: {}x{} (output {})",
+            dxgi.width(),
+            dxgi.height(),
+            output_index
         );
 
         // --- Create encoder ---
-        let (mut encoder, encoder_name) = encoder_setup::create_encoder(&self.config, &decoder)?;
+        let (mut encoder, encoder_name) = encoder_setup::create_encoder(&self.config)?;
 
         info!("Encoder: {}", encoder_name);
 
@@ -95,73 +82,165 @@ impl CaptureManager {
             debug!("Stored codec extradata on buffer");
         }
 
-        // --- Create scaler: input format -> NV12 ---
+        // --- Create scaler: BGRA @ capture resolution -> NV12 @ config resolution ---
+        let capture_w = dxgi.width();
+        let capture_h = dxgi.height();
+        let (enc_w, enc_h) = self.config.resolution;
+
+        let sws_flags = if capture_w == enc_w && capture_h == enc_h {
+            ffmpeg_next::software::scaling::Flags::POINT
+        } else {
+            ffmpeg_next::software::scaling::Flags::BILINEAR
+        };
+
         let mut scaler = ffmpeg_next::software::scaling::Context::get(
-            decoder.format(),
-            decoder.width(),
-            decoder.height(),
+            ffmpeg_next::format::Pixel::BGRA,
+            capture_w,
+            capture_h,
             ffmpeg_next::format::Pixel::NV12,
-            encoder.width(),
-            encoder.height(),
-            ffmpeg_next::software::scaling::Flags::BILINEAR,
+            enc_w,
+            enc_h,
+            sws_flags,
         )
         .context("Failed to create scaler")?;
 
-        info!("Scaler: {:?} -> NV12", decoder.format());
+        info!(
+            "Scaler: BGRA {}x{} -> NV12 {}x{}",
+            capture_w, capture_h, enc_w, enc_h
+        );
 
-        // --- Main capture loop ---
-        let mut decoded_frame = ffmpeg_next::frame::Video::empty();
+        // --- Allocate frames ---
+        let mut bgra_frame =
+            ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::BGRA, capture_w, capture_h);
         let mut scaled_frame = ffmpeg_next::frame::Video::empty();
-        let mut frame_count: u64 = 0;
+
+        // --- Frame pacing ---
         let fps = self.config.fps;
+        let frame_interval = std::time::Duration::from_secs_f64(1.0 / fps as f64);
+        let mut next_frame_time = Instant::now();
+        let mut frame_count: u64 = 0;
+        let mut last_pts: i64 = -1;
+        let mut has_first_frame = false;
 
-        info!("Starting capture loop");
+        info!("Starting capture loop ({}fps)", fps);
 
-        for (stream, input_packet) in input_ctx.packets() {
+        loop {
             if cancel.is_cancelled() {
                 info!("Capture cancelled");
                 break;
             }
 
-            if stream.index() != video_stream_index {
-                continue;
+            // Sleep until next frame time
+            let now = Instant::now();
+            if next_frame_time > now {
+                std::thread::sleep(next_frame_time - now);
+            }
+            next_frame_time += frame_interval;
+
+            // If we fell behind, reset to prevent burst encoding
+            if next_frame_time < Instant::now() {
+                next_frame_time = Instant::now() + frame_interval;
             }
 
-            // Decode
-            decoder.send_packet(&input_packet)?;
-
-            while decoder.receive_frame(&mut decoded_frame).is_ok() {
-                // Scale BGR0 -> NV12
-                scaler.run(&decoded_frame, &mut scaled_frame)?;
-
-                // Compute PTS from wall-clock time so playback speed matches
-                // real time even if gdigrab can't sustain the requested fps
-                let elapsed = capture_start.elapsed();
-                let pts = (elapsed.as_secs_f64() * fps as f64) as i64;
-                scaled_frame.set_pts(Some(pts));
-                scaled_frame.set_kind(ffmpeg_next::picture::Type::None);
-
-                // Encode
-                encoder.send_frame(&scaled_frame)?;
-
-                let mut encoded_packet = ffmpeg_next::Packet::empty();
-                while encoder.receive_packet(&mut encoded_packet).is_ok() {
-                    let packet = Packet::from_ffmpeg_packet(&encoded_packet, PacketType::Video);
-                    buffer.push(packet);
+            // Acquire frame with 0ms timeout (non-blocking poll)
+            let stride = bgra_frame.stride(0);
+            match dxgi.acquire_frame_into(bgra_frame.data_mut(0), stride, 0) {
+                Ok(true) => {
+                    has_first_frame = true;
                 }
-
-                frame_count += 1;
-
-                if frame_count % (fps as u64) == 0 {
-                    let stats = buffer.stats();
-                    debug!(
-                        "Captured {} frames ({:.1} actual fps), buffer: {} packets ({:.1} MB)",
-                        frame_count,
-                        frame_count as f64 / capture_start.elapsed().as_secs_f64(),
-                        stats.packet_count,
-                        stats.total_bytes as f64 / 1024.0 / 1024.0
-                    );
+                Ok(false) => {
+                    // Desktop unchanged — re-encode previous frame if we have one
+                    if !has_first_frame {
+                        continue;
+                    }
                 }
+                Err(e) => {
+                    warn!("DXGI capture error: {:#}", e);
+                    const MAX_RECONNECT_RETRIES: u32 = 20;
+                    let mut reconnected = false;
+                    for attempt in 1..=MAX_RECONNECT_RETRIES {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                        match dxgi.reconnect(output_index) {
+                            Ok(()) => {
+                                info!("DXGI reconnected on attempt {}", attempt);
+                                // Recreate scaler if resolution changed
+                                let new_w = dxgi.width();
+                                let new_h = dxgi.height();
+                                if new_w != capture_w || new_h != capture_h {
+                                    let flags = if new_w == enc_w && new_h == enc_h {
+                                        ffmpeg_next::software::scaling::Flags::POINT
+                                    } else {
+                                        ffmpeg_next::software::scaling::Flags::BILINEAR
+                                    };
+                                    scaler = ffmpeg_next::software::scaling::Context::get(
+                                        ffmpeg_next::format::Pixel::BGRA,
+                                        new_w,
+                                        new_h,
+                                        ffmpeg_next::format::Pixel::NV12,
+                                        enc_w,
+                                        enc_h,
+                                        flags,
+                                    )
+                                    .context("Failed to recreate scaler after reconnect")?;
+                                    bgra_frame = ffmpeg_next::frame::Video::new(
+                                        ffmpeg_next::format::Pixel::BGRA,
+                                        new_w,
+                                        new_h,
+                                    );
+                                    has_first_frame = false;
+                                    info!("Scaler recreated: BGRA {}x{} -> NV12 {}x{}", new_w, new_h, enc_w, enc_h);
+                                }
+                                reconnected = true;
+                                break;
+                            }
+                            Err(re) => {
+                                warn!("Reconnect attempt {}/{} failed: {:#}", attempt, MAX_RECONNECT_RETRIES, re);
+                                std::thread::sleep(std::time::Duration::from_millis(500));
+                            }
+                        }
+                    }
+                    if !reconnected {
+                        anyhow::bail!("DXGI reconnect failed after {} attempts", MAX_RECONNECT_RETRIES);
+                    }
+                    continue;
+                }
+            }
+
+            // Scale BGRA -> NV12
+            scaler.run(&bgra_frame, &mut scaled_frame)?;
+
+            // Set PTS from wall-clock time, enforcing strict monotonicity
+            let elapsed = capture_start.elapsed();
+            let mut pts = (elapsed.as_secs_f64() * fps as f64) as i64;
+            if pts <= last_pts {
+                pts = last_pts + 1;
+            }
+            last_pts = pts;
+            scaled_frame.set_pts(Some(pts));
+            scaled_frame.set_kind(ffmpeg_next::picture::Type::None);
+
+            // Encode
+            encoder.send_frame(&scaled_frame)?;
+
+            let mut encoded_packet = ffmpeg_next::Packet::empty();
+            while encoder.receive_packet(&mut encoded_packet).is_ok() {
+                let packet = Packet::from_ffmpeg_packet(&encoded_packet, PacketType::Video);
+                buffer.push(packet);
+            }
+
+            frame_count += 1;
+
+            if frame_count % (fps as u64) == 0 {
+                let stats = buffer.stats();
+                debug!(
+                    "Captured {} frames ({:.1} actual fps), buffer: {} packets ({:.1} MB)",
+                    frame_count,
+                    frame_count as f64 / capture_start.elapsed().as_secs_f64(),
+                    stats.packet_count,
+                    stats.total_bytes as f64 / 1024.0 / 1024.0
+                );
             }
         }
 
@@ -177,79 +256,5 @@ impl CaptureManager {
 
         info!("Capture loop ended after {} frames", frame_count);
         Ok(())
-    }
-
-    /// Open gdigrab input device
-    fn open_gdigrab_input(&self) -> Result<ffmpeg_next::format::context::Input> {
-        // Use FFI to get gdigrab input format
-        let input_format = unsafe {
-            let name = std::ffi::CString::new("gdigrab").unwrap();
-            let fmt = ffmpeg_sys_next::av_find_input_format(name.as_ptr());
-            if fmt.is_null() {
-                anyhow::bail!(
-                    "gdigrab input format not found — is FFmpeg built with gdigrab support?"
-                );
-            }
-            fmt
-        };
-
-        // Build options dictionary
-        let mut opts = ffmpeg_next::Dictionary::new();
-        opts.set("framerate", &self.config.fps.to_string());
-        opts.set(
-            "video_size",
-            &format!("{}x{}", self.config.resolution.0, self.config.resolution.1),
-        );
-        opts.set("draw_mouse", "1");
-
-        // Input path: "desktop" for full screen, or "title=WindowName"
-        let input_path = match &self.config.capture_source {
-            Some(title) => format!("title={}", title),
-            None => "desktop".to_string(),
-        };
-
-        info!(
-            "Opening gdigrab: {} ({}x{} @ {}fps)",
-            input_path, self.config.resolution.0, self.config.resolution.1, self.config.fps
-        );
-
-        // Open input via FFI
-        let input_ctx = unsafe {
-            let mut ctx: *mut ffmpeg_sys_next::AVFormatContext = std::ptr::null_mut();
-            let path = std::ffi::CString::new(input_path.as_str()).unwrap();
-            let mut opts_ptr = opts.disown();
-
-            let ret = ffmpeg_sys_next::avformat_open_input(
-                &mut ctx,
-                path.as_ptr(),
-                input_format,
-                &mut opts_ptr,
-            );
-
-            // Free remaining options
-            if !opts_ptr.is_null() {
-                ffmpeg_sys_next::av_dict_free(&mut opts_ptr);
-            }
-
-            if ret < 0 {
-                anyhow::bail!(
-                    "Failed to open gdigrab input: {}",
-                    ffmpeg_next::Error::from(ret)
-                );
-            }
-
-            let ret = ffmpeg_sys_next::avformat_find_stream_info(ctx, std::ptr::null_mut());
-            if ret < 0 {
-                ffmpeg_sys_next::avformat_close_input(&mut ctx);
-                anyhow::bail!(
-                    "Failed to find stream info: {}",
-                    ffmpeg_next::Error::from(ret)
-                );
-            }
-
-            ffmpeg_next::format::context::Input::wrap(ctx)
-        };
-
-        Ok(input_ctx)
     }
 }

@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use clap::Parser;
-use mebal::{AppState, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
+use mebal::{App, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -53,10 +53,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parse command line arguments
     let args = Args::parse();
 
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -66,7 +64,6 @@ async fn main() -> Result<()> {
 
     info!("Starting Mebal v{}", env!("CARGO_PKG_VERSION"));
 
-    // Handle list commands
     if args.list_encoders {
         mebal::init_ffmpeg();
         println!("Available encoders:");
@@ -77,10 +74,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Load configuration
     let mut config = Config::load()?;
 
-    // Apply command line overrides
     if let Some(hotkey) = args.hotkey {
         config.hotkey = hotkey;
     }
@@ -97,7 +92,6 @@ async fn main() -> Result<()> {
         config.audio_enabled = false;
     }
 
-    // Validate configuration
     config.validate()?;
 
     info!("Configuration:");
@@ -123,17 +117,12 @@ async fn main() -> Result<()> {
     info!("  Output directory: {}", config.output_directory);
     info!("  Hotkey: {}", config.hotkey);
 
-    // Create application state
-    let app_state = Arc::new(AppState::new(config.clone()));
-
-    // Create cancellation token for clean shutdown
+    let app = App::new(config.clone());
     let cancel_token = CancellationToken::new();
-
-    // Shared epoch for A/V sync
     let capture_start = std::time::Instant::now();
 
-    // Start video capture in a blocking task
-    let capture_buffer = Arc::clone(&app_state.packet_buffer);
+    // Video capture
+    let capture_buffer = Arc::clone(&app.packet_buffer);
     let capture_cancel = cancel_token.clone();
     let capture_config = config.clone();
     let capture_handle =
@@ -149,10 +138,10 @@ async fn main() -> Result<()> {
             }
         });
 
-    // Start audio capture in a blocking task (if enabled)
+    // Audio capture
     let audio_enabled = config.audio_enabled;
     let audio_handle = if audio_enabled {
-        let audio_buffer = Arc::clone(&app_state.packet_buffer);
+        let audio_buffer = Arc::clone(&app.packet_buffer);
         let audio_cancel = cancel_token.clone();
         let audio_config = config.clone();
         Some(tokio::task::spawn_blocking(move || {
@@ -166,12 +155,13 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Set up hotkey handler (hook runs on its own thread)
-    let hotkey_state = Arc::clone(&app_state);
+    // Hotkey handler
+    let hotkey_app = app.clone();
+    let tracker = app.tracker().clone();
     let _hotkey_manager = HotkeyManager::new(&config.hotkey, move || {
-        let state = Arc::clone(&hotkey_state);
-        tokio::spawn(async move {
-            if let Err(e) = state.save_replay().await {
+        let app = hotkey_app.clone();
+        tracker.spawn(async move {
+            if let Err(e) = app.save_replay().await {
                 error!("Failed to save replay: {}", e);
             }
         });
@@ -188,7 +178,6 @@ async fn main() -> Result<()> {
     info!("========================================");
     info!("");
 
-    // Future that resolves when audio task ends, or pends forever if audio is disabled
     let audio_future = async {
         if let Some(handle) = audio_handle {
             let _ = handle.await;
@@ -197,7 +186,6 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Wait until a task ends or Ctrl+C (hotkey hook runs on its own thread)
     tokio::select! {
         _ = capture_handle => {
             warn!("Capture task ended");
@@ -210,10 +198,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Signal capture to stop
     cancel_token.cancel();
 
-    // _hotkey_manager is dropped here, which unregisters the hotkey
+    // Drain in-flight saves before exit
+    app.tracker().close();
+    app.tracker().wait().await;
 
     info!("Mebal shutting down...");
     Ok(())

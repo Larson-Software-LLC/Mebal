@@ -11,6 +11,7 @@
 use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, trace};
@@ -19,7 +20,6 @@ mod packet;
 
 pub use packet::{Packet, PacketType};
 
-/// Audio stream parameters stored alongside the buffer
 #[derive(Debug, Clone)]
 pub struct AudioParams {
     pub sample_rate: u32,
@@ -28,45 +28,33 @@ pub struct AudioParams {
     pub extradata: Vec<u8>,
 }
 
-/// A thread-safe circular buffer for video packets
 pub struct PacketBuffer {
-    /// Internal storage for packets
     inner: RwLock<BufferInner>,
-    /// Maximum duration to keep in buffer (in seconds)
     max_duration_secs: AtomicU32,
-    /// Expected frames per second (for capacity estimation)
     fps: AtomicU32,
-    /// GOP interval in seconds (used for keyframe compensation during retrieval)
     gop_secs: AtomicU32,
-    /// Codec extradata (SPS/PPS) needed by the writer to produce valid MP4
-    codec_extradata: RwLock<Option<Vec<u8>>>,
-    /// Audio stream parameters (set by audio capture, read by writer)
-    audio_params: RwLock<Option<AudioParams>>,
+    /// SPS/PPS — set once by encoder, read by writer
+    codec_extradata: OnceLock<Vec<u8>>,
+    /// Set once by audio capture, read by writer
+    audio_params: OnceLock<AudioParams>,
 }
 
-/// Internal buffer state
 struct BufferInner {
-    /// The packet queue
     packets: VecDeque<Arc<Packet>>,
-    /// Total bytes currently in buffer
     total_bytes: usize,
-    /// Maximum bytes before eviction
     max_bytes: usize,
-    /// Sequence number for ordering
     sequence: u64,
 }
 
-/// Multiplier for VBR headroom (5/4 = 1.25x) applied to the byte budget.
+/// VBR headroom: 1.25x
 const VBR_HEADROOM_NUM: usize = 5;
 const VBR_HEADROOM_DEN: usize = 4;
 
-/// Compute the maximum byte budget for a given bitrate and duration.
 const fn max_bytes_for(bitrate_kbps: usize, duration_secs: u32) -> usize {
     (bitrate_kbps * 1024 / 8) * duration_secs as usize * VBR_HEADROOM_NUM / VBR_HEADROOM_DEN
 }
 
 impl PacketBuffer {
-    /// Create a new packet buffer.
     pub fn new(max_duration_secs: u32, fps: u32, bitrate_kbps: usize, gop_secs: u32) -> Self {
         let estimated_packets = (fps * max_duration_secs) as usize;
         let max_bytes = max_bytes_for(bitrate_kbps, max_duration_secs);
@@ -90,15 +78,11 @@ impl PacketBuffer {
             max_duration_secs: AtomicU32::new(max_duration_secs),
             fps: AtomicU32::new(fps),
             gop_secs: AtomicU32::new(gop_secs),
-            codec_extradata: RwLock::new(None),
-            audio_params: RwLock::new(None),
+            codec_extradata: OnceLock::new(),
+            audio_params: OnceLock::new(),
         }
     }
 
-    /// Add a packet to the buffer
-    ///
-    /// This will evict old packets if the buffer is full
-    /// or if packets are older than max_duration.
     pub fn push(&self, packet: Packet) {
         let mut inner = self.inner.write();
 
@@ -106,7 +90,6 @@ impl PacketBuffer {
         let sequence = inner.sequence;
         inner.sequence += 1;
 
-        // Add packet with sequence number
         let mut packet = packet;
         packet.sequence = sequence;
         inner.total_bytes += packet_size;
@@ -120,12 +103,10 @@ impl PacketBuffer {
             inner.packets.len()
         );
 
-        // Evict old packets if needed
         Self::evict_old_packets(&mut inner, self.max_duration_secs.load(Ordering::Relaxed));
     }
 
-    /// Get packets covering the last `duration_secs`, plus GOP overfetch
-    /// so `trim_to_keyframe` can find a keyframe without shortening the clip.
+    /// Returns packets for the last `duration_secs`, plus GOP overfetch for keyframe alignment.
     pub fn get_packets_for_duration(&self, duration_secs: u32) -> Vec<Arc<Packet>> {
         let inner = self.inner.read();
 
@@ -133,21 +114,15 @@ impl PacketBuffer {
             return Vec::new();
         }
 
-        // Use last packet's PTS as the reference point
         let last_pts = inner.packets.back().unwrap().pts;
-
-        // Over-fetch by gop_secs so trim_to_keyframe has room for a keyframe.
         let gop_secs = self.gop_secs.load(Ordering::Relaxed) as i64;
         let fps = self.fps.load(Ordering::Relaxed) as i64;
         let fetch_secs = duration_secs as i64 + gop_secs;
         let cutoff_pts = last_pts - fetch_secs * fps;
 
-        // Binary search for the first packet at or past the cutoff (O(log n)
-        // instead of the previous O(n) skip_while scan).
         let start_idx = inner.packets.partition_point(|p| p.pts < cutoff_pts);
         let count = inner.packets.len() - start_idx;
 
-        // Clone only the Arc refcounts — no packet data is copied.
         let mut packets = Vec::with_capacity(count);
         for i in start_idx..inner.packets.len() {
             packets.push(Arc::clone(&inner.packets[i]));
@@ -165,17 +140,14 @@ impl PacketBuffer {
         packets
     }
 
-    /// Get all packets in the buffer
     pub fn get_all_packets(&self) -> Vec<Arc<Packet>> {
         let inner = self.inner.read();
         inner.packets.iter().cloned().collect()
     }
 
-    /// Get current buffer statistics
     pub fn stats(&self) -> BufferStats {
         let inner = self.inner.read();
         let fps = self.fps.load(Ordering::Relaxed);
-        // Derive duration from PTS range
         let duration_secs = if inner.packets.len() >= 2 {
             let first_pts = inner.packets.front().unwrap().pts;
             let last_pts = inner.packets.back().unwrap().pts;
@@ -191,7 +163,6 @@ impl PacketBuffer {
         }
     }
 
-    /// Clear all packets from the buffer
     pub fn clear(&self) {
         let mut inner = self.inner.write();
         inner.packets.clear();
@@ -200,7 +171,6 @@ impl PacketBuffer {
         debug!("Buffer cleared");
     }
 
-    /// Update buffer parameters at runtime (e.g. after a settings change).
     pub fn reconfigure(
         &self,
         max_duration_secs: u32,
@@ -222,36 +192,26 @@ impl PacketBuffer {
         );
     }
 
-    /// Store codec extradata (SPS/PPS) from the encoder
     pub fn set_codec_extradata(&self, data: Vec<u8>) {
-        let mut extradata = self.codec_extradata.write();
-        *extradata = Some(data);
+        let _ = self.codec_extradata.set(data);
     }
 
-    /// Get codec extradata (SPS/PPS) for the writer
     pub fn get_codec_extradata(&self) -> Option<Vec<u8>> {
-        let extradata = self.codec_extradata.read();
-        extradata.clone()
+        self.codec_extradata.get().cloned()
     }
 
-    /// Store audio stream parameters from the audio encoder
     pub fn set_audio_params(&self, params: AudioParams) {
-        let mut ap = self.audio_params.write();
-        *ap = Some(params);
+        let _ = self.audio_params.set(params);
     }
 
-    /// Get audio stream parameters for the writer
     pub fn get_audio_params(&self) -> Option<AudioParams> {
-        let ap = self.audio_params.read();
-        ap.clone()
+        self.audio_params.get().cloned()
     }
 
-    /// Evict packets that are too old or exceed size limit
     fn evict_old_packets(inner: &mut BufferInner, max_duration_secs: u32) {
         let now = Instant::now();
         let max_age = Duration::from_secs(max_duration_secs as u64);
 
-        // Remove old packets based on time
         while let Some(front) = inner.packets.front() {
             if now.saturating_duration_since(front.timestamp) > max_age {
                 let removed = inner.packets.pop_front().unwrap();
@@ -261,7 +221,6 @@ impl PacketBuffer {
             }
         }
 
-        // Remove old packets if we exceed size limit
         while inner.total_bytes > inner.max_bytes && inner.packets.len() > 1 {
             if let Some(removed) = inner.packets.pop_front() {
                 inner.total_bytes -= removed.data.len();
@@ -270,7 +229,6 @@ impl PacketBuffer {
     }
 }
 
-/// Buffer statistics
 #[derive(Debug, Clone, Copy)]
 pub struct BufferStats {
     pub packet_count: usize,
@@ -280,7 +238,6 @@ pub struct BufferStats {
 }
 
 impl BufferStats {
-    /// Get buffer utilization as a percentage
     pub fn utilization_percent(&self) -> f64 {
         if self.max_bytes == 0 {
             0.0

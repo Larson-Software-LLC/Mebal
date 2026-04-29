@@ -11,7 +11,7 @@
 //! # Example Usage
 //!
 //! ```no_run
-//! use mebal::{Config, CaptureManager, PacketBuffer, GOP_INTERVAL_SECS};
+//! use mebal::{App, Config, CaptureManager, PacketBuffer, GOP_INTERVAL_SECS};
 //! use std::sync::Arc;
 //! use std::time::Instant;
 //! use tokio_util::sync::CancellationToken;
@@ -19,12 +19,11 @@
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     let config = Config::load()?;
-//!     let buffer = Arc::new(PacketBuffer::new(
-//!         config.buffer_duration_secs, config.fps, config.bitrate_kbps, GOP_INTERVAL_SECS,
-//!     ));
+//!     let app = App::new(config.clone());
 //!     let cancel = CancellationToken::new();
 //!     let capture_start = Instant::now();
 //!
+//!     let buffer = Arc::clone(&app.packet_buffer);
 //!     let capture = CaptureManager::new(&config)?;
 //!     tokio::task::spawn_blocking(move || {
 //!         capture.run_blocking(buffer, cancel, capture_start).unwrap();
@@ -42,7 +41,7 @@ pub mod error;
 pub mod hotkey;
 pub mod writer;
 
-pub use app::AppState;
+pub use app::{App, AppState};
 pub use buffer::PacketBuffer;
 pub use capture::CaptureManager;
 pub use capture::audio::AudioCaptureManager;
@@ -50,8 +49,6 @@ pub use config::Config;
 pub use error::{MebalError, MebalResult};
 pub use hotkey::HotkeyManager;
 pub use writer::VideoWriter;
-
-/// Version of the Mebal library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use config::GOP_INTERVAL_SECS;

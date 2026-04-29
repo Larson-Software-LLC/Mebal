@@ -8,6 +8,7 @@ mod tray;
 
 use state::TauriAppState;
 use tauri::Manager;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 pub fn run() {
@@ -37,7 +38,6 @@ pub fn run() {
         .setup(|app| {
             tray::create_tray(app)?;
 
-            // Auto-start capture
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let ts = handle.state::<TauriAppState>();
@@ -46,18 +46,16 @@ pub fn run() {
                 }
             });
 
-            // Register global hotkey
             if let Err(e) = tray::register_hotkey(app) {
                 tracing::warn!("Failed to register hotkey: {} — hotkey disabled", e);
             }
 
-            // Start status polling
             let handle = app.handle().clone();
+            let poll_cancel = CancellationToken::new();
             tauri::async_runtime::spawn(async move {
-                state::status_poll_loop(&handle).await;
+                state::status_poll_loop(&handle, poll_cancel).await;
             });
 
-            // Open devtools in debug mode
             #[cfg(debug_assertions)]
             if let Some(window) = app.get_webview_window("settings") {
                 let _ = window.show();
@@ -78,7 +76,6 @@ pub fn run() {
         .expect("Failed to build Tauri app")
         .run(|_app, event| {
             if let tauri::RunEvent::ExitRequested { ref api, .. } = event {
-                // Keep alive in tray when window is hidden
                 api.prevent_exit();
             }
         });

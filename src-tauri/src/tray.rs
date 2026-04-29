@@ -11,7 +11,6 @@ use tauri::{
 };
 use tracing::{error, info};
 
-/// Create the system tray icon and menu.
 pub fn create_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let save_i = MenuItem::with_id(app, "save", "Save Replay", true, None::<&str>)?;
     let settings_i = MenuItem::with_id(app, "settings", "Settings...", true, None::<&str>)?;
@@ -24,9 +23,10 @@ pub fn create_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "save" => {
                 let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let ts = handle.state::<TauriAppState>();
-                    if let Err(e) = ts.inner.save_replay().await {
+                let ts = handle.state::<TauriAppState>();
+                let inner = ts.inner.clone();
+                ts.task_tracker.spawn(async move {
+                    if let Err(e) = inner.save_replay().await {
                         error!("Failed to save replay: {}", e);
                     }
                 });
@@ -58,7 +58,6 @@ fn show_settings_window(app: &AppHandle) {
     }
 }
 
-/// Register the global hotkey from config using the library's HotkeyManager.
 pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let ts = app.state::<TauriAppState>();
     let config = ts.inner.config();
@@ -67,15 +66,15 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
     let handle = app.handle().clone();
     let manager = HotkeyManager::new(&hotkey_str, move || {
         let handle = handle.clone();
-        tauri::async_runtime::spawn(async move {
-            let ts = handle.state::<TauriAppState>();
-            if let Err(e) = ts.inner.save_replay().await {
+        let ts = handle.state::<TauriAppState>();
+        let inner = ts.inner.clone();
+        ts.task_tracker.spawn(async move {
+            if let Err(e) = inner.save_replay().await {
                 error!("Failed to save replay via hotkey: {}", e);
             }
         });
     })?;
 
-    // Store the manager in TauriAppState so it stays alive
     ts.set_hotkey_manager(manager);
 
     info!("Registered global hotkey: {}", hotkey_str);

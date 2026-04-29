@@ -221,7 +221,8 @@ impl VideoWriter {
             .map(|p| p.dts)
             .unwrap_or(0);
 
-        // Guard: skip audio packets with non-monotonic DTS (stale session data).
+        // Guard: skip packets with non-monotonic DTS.
+        let mut last_video_dts: Option<i64> = None;
         let mut last_audio_dts: Option<i64> = None;
 
         for packet in &packets {
@@ -232,6 +233,18 @@ impl VideoWriter {
                     ffmpeg_pkt.set_dts(Some(packet.dts - video_dts_offset));
                     ffmpeg_pkt.set_stream(stream_index);
                     ffmpeg_pkt.rescale_ts(buffer_time_base, video_stream_tb);
+
+                    let scaled_dts = ffmpeg_pkt.dts().unwrap_or(0);
+                    if let Some(last) = last_video_dts {
+                        if scaled_dts <= last {
+                            warn!(
+                                "Skipping non-monotonic video packet (DTS={}, last={})",
+                                scaled_dts, last
+                            );
+                            continue;
+                        }
+                    }
+                    last_video_dts = Some(scaled_dts);
 
                     if packet.is_keyframe {
                         ffmpeg_pkt.set_flags(ffmpeg_next::codec::packet::Flags::KEY);
