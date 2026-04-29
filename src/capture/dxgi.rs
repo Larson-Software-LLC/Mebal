@@ -11,16 +11,15 @@ use anyhow::{Context, Result};
 use tracing::{debug, warn};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
-};
-use windows::Win32::Graphics::Dxgi::{
-    IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
-    DXGI_OUTDUPL_FRAME_INFO,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::core::{Interface, HRESULT};
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_OUTDUPL_FRAME_INFO, IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
+};
+use windows::core::{HRESULT, Interface};
 
 const DXGI_ERROR_WAIT_TIMEOUT: HRESULT = HRESULT(0x887A0027u32 as i32);
 const DXGI_ERROR_ACCESS_LOST: HRESULT = HRESULT(0x887A0026u32 as i32);
@@ -57,13 +56,13 @@ impl DxgiCapture {
         let context = context.context("D3D11 device context was null")?;
 
         // Get DXGI adapter and output
-        let dxgi_device: IDXGIDevice =
-            device.cast().context("Failed to cast to IDXGIDevice")?;
+        let dxgi_device: IDXGIDevice = device.cast().context("Failed to cast to IDXGIDevice")?;
         let adapter = unsafe { dxgi_device.GetAdapter().context("GetAdapter failed")? };
         let output = unsafe {
-            adapter
-                .EnumOutputs(output_index)
-                .context(format!("EnumOutputs({}) failed — check monitor index", output_index))?
+            adapter.EnumOutputs(output_index).context(format!(
+                "EnumOutputs({}) failed — check monitor index",
+                output_index
+            ))?
         };
         // Get output dimensions
         let desc = unsafe { output.GetDesc().context("GetDesc failed")? };
@@ -172,13 +171,16 @@ impl DxgiCapture {
 
     /// Reconnect after access lost (e.g. resolution change, lock screen).
     pub fn reconnect(&mut self, output_index: u32) -> Result<()> {
-        let dxgi_device: IDXGIDevice =
-            self.device.cast().context("Failed to cast to IDXGIDevice")?;
+        let dxgi_device: IDXGIDevice = self
+            .device
+            .cast()
+            .context("Failed to cast to IDXGIDevice")?;
         let adapter = unsafe { dxgi_device.GetAdapter().context("GetAdapter failed")? };
         let output = unsafe {
-            adapter
-                .EnumOutputs(output_index)
-                .context(format!("EnumOutputs({}) failed during reconnect", output_index))?
+            adapter.EnumOutputs(output_index).context(format!(
+                "EnumOutputs({}) failed during reconnect",
+                output_index
+            ))?
         };
         let desc = unsafe { output.GetDesc().context("GetDesc failed")? };
 

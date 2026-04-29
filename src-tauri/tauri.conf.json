@@ -2,10 +2,10 @@
   "$schema": "https://raw.githubusercontent.com/nicegui-org/nicegui/main/nicegui/tauri/tauri.conf.schema.json",
   "identifier": "com.larsonsoftware.mebal",
   "build": {
-    "frontendDist": "../dist",
+    "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "npm --prefix ../ui run dev",
+    "beforeBuildCommand": "npm --prefix ../ui run build"
   },
   "app": {
     "windows": [

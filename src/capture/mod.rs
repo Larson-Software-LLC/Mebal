@@ -52,8 +52,8 @@ impl CaptureManager {
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(0);
 
-        let mut dxgi = dxgi::DxgiCapture::new(output_index)
-            .context("Failed to initialize DXGI capture")?;
+        let mut dxgi =
+            dxgi::DxgiCapture::new(output_index).context("Failed to initialize DXGI capture")?;
 
         info!(
             "DXGI capture opened: {}x{} (output {})",
@@ -190,19 +190,28 @@ impl CaptureManager {
                                         new_h,
                                     );
                                     has_first_frame = false;
-                                    info!("Scaler recreated: BGRA {}x{} -> NV12 {}x{}", new_w, new_h, enc_w, enc_h);
+                                    info!(
+                                        "Scaler recreated: BGRA {}x{} -> NV12 {}x{}",
+                                        new_w, new_h, enc_w, enc_h
+                                    );
                                 }
                                 reconnected = true;
                                 break;
                             }
                             Err(re) => {
-                                warn!("Reconnect attempt {}/{} failed: {:#}", attempt, MAX_RECONNECT_RETRIES, re);
+                                warn!(
+                                    "Reconnect attempt {}/{} failed: {:#}",
+                                    attempt, MAX_RECONNECT_RETRIES, re
+                                );
                                 std::thread::sleep(std::time::Duration::from_millis(500));
                             }
                         }
                     }
                     if !reconnected {
-                        anyhow::bail!("DXGI reconnect failed after {} attempts", MAX_RECONNECT_RETRIES);
+                        anyhow::bail!(
+                            "DXGI reconnect failed after {} attempts",
+                            MAX_RECONNECT_RETRIES
+                        );
                     }
                     continue;
                 }
