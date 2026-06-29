@@ -8,6 +8,7 @@ use mebal::buffer::{Packet, PacketBuffer, PacketType};
 use mebal::config::{Config, GOP_INTERVAL_SECS};
 use mebal::writer::{VideoWriter, find_first_keyframe, trim_to_keyframe};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -118,8 +119,8 @@ fn buffer_to_trim_pipeline_produces_keyframe_aligned_output() {
 
 #[test]
 fn trim_returns_empty_when_no_keyframes_present() {
-    let packets: Vec<Packet> = (0..100)
-        .map(|i| video_packet(i, false, 128))
+    let packets: Vec<Arc<Packet>> = (0..100)
+        .map(|i| Arc::new(video_packet(i, false, 128)))
         .collect();
 
     let trimmed = trim_to_keyframe(packets);
@@ -129,10 +130,10 @@ fn trim_returns_empty_when_no_keyframes_present() {
 #[test]
 fn find_first_keyframe_skips_audio_keyframes() {
     let packets = vec![
-        audio_packet(0, 64), // audio is_keyframe=true, should be ignored
-        video_packet(1, false, 128),
-        video_packet(2, true, 128), // first *video* keyframe
-        video_packet(3, false, 128),
+        Arc::new(audio_packet(0, 64)), // audio is_keyframe=true, should be ignored
+        Arc::new(video_packet(1, false, 128)),
+        Arc::new(video_packet(2, true, 128)), // first *video* keyframe
+        Arc::new(video_packet(3, false, 128)),
     ];
 
     assert_eq!(find_first_keyframe(&packets), Some(2));

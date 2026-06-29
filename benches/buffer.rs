@@ -91,13 +91,14 @@ fn bench_get_packets(c: &mut Criterion) {
 
 fn bench_trim_to_keyframe(c: &mut Criterion) {
     use mebal::writer::trim_to_keyframe;
+    use std::sync::Arc;
 
     let mut group = c.benchmark_group("trim_to_keyframe");
 
     // Build a realistic packet slice: 30s @ 60fps = 1800 packets,
     // keyframe every 120 frames. First keyframe at index 0.
-    let packets: Vec<Packet> = (0..1800)
-        .map(|i| make_packet(i, (i as u32) % 120 == 0))
+    let packets: Vec<Arc<Packet>> = (0..1800)
+        .map(|i| Arc::new(make_packet(i, (i as u32) % 120 == 0)))
         .collect();
 
     group.bench_function("1800_packets", |b| {
@@ -110,8 +111,8 @@ fn bench_trim_to_keyframe(c: &mut Criterion) {
     });
 
     // Worst case: keyframe only at the very end
-    let worst: Vec<Packet> = (0..1800)
-        .map(|i| make_packet(i, i == 1799))
+    let worst: Vec<Arc<Packet>> = (0..1800)
+        .map(|i| Arc::new(make_packet(i, i == 1799)))
         .collect();
 
     group.bench_function("1800_packets_late_keyframe", |b| {
