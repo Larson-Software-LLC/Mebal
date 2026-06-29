@@ -18,7 +18,7 @@ ffmpeg-sys-next = { version = "7.0", features = ["static"] }
 livesplit-hotkey = "0.7"
 
 # For async runtime (needed by global-hotkey)
-tokio = { version = "1.35", features = ["full"] }
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "signal", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 
 # Logging
@@ -26,7 +26,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
-thiserror = "1.0"
 anyhow = "1.0"
 
 # Configuration
@@ -45,15 +44,17 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Gdi",
+    "Win32_Devices_Display",
+    "Win32_UI_HiDpi",
 ] }
 
 # Command line arguments
 clap = { version = "4.4", features = ["derive"] }
 
 # Concurrent data structures
-crossbeam = "0.8"
 parking_lot = "0.12"
 
 # Zero-copy byte buffers

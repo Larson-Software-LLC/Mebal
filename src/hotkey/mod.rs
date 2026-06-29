@@ -16,17 +16,6 @@ mod parser;
 
 pub use parser::parse_hotkey;
 
-const SUGGESTED_KEYS: [&str; 8] = [
-    "F9",
-    "F10",
-    "F11",
-    "F12",
-    "Ctrl+F9",
-    "Ctrl+Shift+R",
-    "Alt+`",
-    "Ctrl+Alt+S",
-];
-
 /// Hotkey manager that handles global keyboard shortcuts.
 ///
 /// Uses `livesplit-hotkey` which installs a non-exclusive low-level keyboard
@@ -71,19 +60,14 @@ impl Drop for HotkeyManager {
     }
 }
 
-/// Check if a hotkey string is valid
-pub fn validate_hotkey(hotkey_str: &str) -> bool {
-    parse_hotkey(hotkey_str).is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_validate_hotkey() {
-        assert!(validate_hotkey("F9"));
-        assert!(validate_hotkey("Ctrl+F9"));
-        assert!(validate_hotkey("Ctrl+Shift+R"));
+    fn test_parse_hotkey_ok() {
+        assert!(parse_hotkey("F9").is_ok());
+        assert!(parse_hotkey("Ctrl+F9").is_ok());
+        assert!(parse_hotkey("Ctrl+Shift+R").is_ok());
     }
 }

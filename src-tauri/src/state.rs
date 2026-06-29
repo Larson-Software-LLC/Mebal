@@ -2,7 +2,7 @@
 // All rights reserved.
 // This source code is proprietary and confidential.
 
-use mebal::{App, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
+use mebal::{App, AppState, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::sync::Arc;
@@ -37,7 +37,7 @@ pub struct StatusResponse {
 impl TauriAppState {
     pub fn new(config: Config) -> Self {
         Self {
-            inner: App::new(config),
+            inner: AppState::new(config),
             cancel_token: Mutex::new(None),
             capturing: AtomicBool::new(false),
             hotkey_manager: Mutex::new(None),

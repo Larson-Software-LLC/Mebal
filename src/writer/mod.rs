@@ -5,7 +5,6 @@
 //! Video file writer for saving replay clips
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::buffer::{AudioParams, Packet, PacketType};
@@ -55,7 +54,7 @@ impl VideoWriter {
     /// This is a blocking operation — call from spawn_blocking.
     pub fn write_packets_blocking<P: AsRef<Path>>(
         &self,
-        packets: Vec<Arc<Packet>>,
+        packets: Vec<Packet>,
         output_path: P,
     ) -> Result<()> {
         let path = output_path.as_ref();
@@ -299,14 +298,14 @@ impl VideoWriter {
 }
 
 /// Find the index of the first video keyframe (ignores audio keyframes).
-pub fn find_first_keyframe(packets: &[Arc<Packet>]) -> Option<usize> {
+pub fn find_first_keyframe(packets: &[Packet]) -> Option<usize> {
     packets
         .iter()
         .position(|p| p.is_keyframe && p.packet_type == PacketType::Video)
 }
 
 /// Trim packets to start from a keyframe
-pub fn trim_to_keyframe(packets: Vec<Arc<Packet>>) -> Vec<Arc<Packet>> {
+pub fn trim_to_keyframe(packets: Vec<Packet>) -> Vec<Packet> {
     if let Some(keyframe_idx) = find_first_keyframe(&packets) {
         packets.into_iter().skip(keyframe_idx).collect()
     } else {
@@ -319,8 +318,8 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
-    fn create_test_packet(pts: i64, is_keyframe: bool) -> Arc<Packet> {
-        Arc::new(Packet {
+    fn create_test_packet(pts: i64, is_keyframe: bool) -> Packet {
+        Packet {
             data: bytes::Bytes::from(vec![0u8; 100]),
             packet_type: PacketType::Video,
             timestamp: Instant::now(),
@@ -328,9 +327,8 @@ mod tests {
             dts: pts,
             duration: 1,
             is_keyframe,
-            sequence: pts as u64,
             stream_index: 0,
-        })
+        }
     }
 
     #[test]
@@ -349,7 +347,7 @@ mod tests {
     fn test_find_first_keyframe_ignores_audio() {
         let packets = vec![
             // Audio keyframe should be skipped
-            Arc::new(Packet {
+            Packet {
                 data: bytes::Bytes::from(vec![0u8; 50]),
                 packet_type: PacketType::Audio,
                 timestamp: Instant::now(),
@@ -357,9 +355,8 @@ mod tests {
                 dts: 0,
                 duration: 1,
                 is_keyframe: true,
-                sequence: 0,
                 stream_index: 0,
-            }),
+            },
             create_test_packet(1, false),
             create_test_packet(2, true),
         ];

@@ -15,21 +15,8 @@ use crate::buffer::PacketBuffer;
 use crate::config::Config;
 use crate::writer::VideoWriter;
 
-#[derive(Clone)]
-pub struct App(Arc<AppState>);
-
-impl App {
-    pub fn new(config: Config) -> Self {
-        Self(Arc::new(AppState::new(config)))
-    }
-}
-
-impl std::ops::Deref for App {
-    type Target = AppState;
-    fn deref(&self) -> &AppState {
-        &self.0
-    }
-}
+/// Cheap-to-clone handle to the shared application state.
+pub type App = Arc<AppState>;
 
 pub struct AppState {
     pub packet_buffer: Arc<PacketBuffer>,
@@ -39,10 +26,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn new(config: Config) -> Self {
+    pub fn new(config: Config) -> App {
         let total_bitrate = config.total_bitrate_kbps();
 
-        Self {
+        Arc::new(Self {
             packet_buffer: Arc::new(PacketBuffer::new(
                 config.buffer_duration_secs,
                 config.fps,
@@ -52,7 +39,7 @@ impl AppState {
             config: ArcSwap::from_pointee(config),
             saving: AtomicBool::new(false),
             tracker: TaskTracker::new(),
-        }
+        })
     }
 
     pub fn config(&self) -> Arc<Config> {

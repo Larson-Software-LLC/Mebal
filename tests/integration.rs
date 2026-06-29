@@ -8,7 +8,6 @@ use mebal::buffer::{Packet, PacketBuffer, PacketType};
 use mebal::config::{Config, GOP_INTERVAL_SECS};
 use mebal::writer::{VideoWriter, find_first_keyframe, trim_to_keyframe};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -25,7 +24,6 @@ fn video_packet(pts: i64, is_keyframe: bool, size: usize) -> Packet {
         dts: pts,
         duration: 1,
         is_keyframe,
-        sequence: 0,
         stream_index: 0,
     }
 }
@@ -40,7 +38,6 @@ fn audio_packet(pts: i64, size: usize) -> Packet {
         dts: pts,
         duration: 1024,
         is_keyframe: true,
-        sequence: 0,
         stream_index: 1,
     }
 }
@@ -121,8 +118,8 @@ fn buffer_to_trim_pipeline_produces_keyframe_aligned_output() {
 
 #[test]
 fn trim_returns_empty_when_no_keyframes_present() {
-    let packets: Vec<Arc<Packet>> = (0..100)
-        .map(|i| Arc::new(video_packet(i, false, 128)))
+    let packets: Vec<Packet> = (0..100)
+        .map(|i| video_packet(i, false, 128))
         .collect();
 
     let trimmed = trim_to_keyframe(packets);
@@ -132,10 +129,10 @@ fn trim_returns_empty_when_no_keyframes_present() {
 #[test]
 fn find_first_keyframe_skips_audio_keyframes() {
     let packets = vec![
-        Arc::new(audio_packet(0, 64)), // audio is_keyframe=true, should be ignored
-        Arc::new(video_packet(1, false, 128)),
-        Arc::new(video_packet(2, true, 128)), // first *video* keyframe
-        Arc::new(video_packet(3, false, 128)),
+        audio_packet(0, 64), // audio is_keyframe=true, should be ignored
+        video_packet(1, false, 128),
+        video_packet(2, true, 128), // first *video* keyframe
+        video_packet(3, false, 128),
     ];
 
     assert_eq!(find_first_keyframe(&packets), Some(2));
@@ -150,13 +147,13 @@ fn buffer_preserves_packet_ordering_with_interleaved_streams() {
     let buffer = PacketBuffer::new(60, 60, 8000, 1);
     fill_buffer(&buffer, 3, 60, 60, true);
 
-    let packets = buffer.get_all_packets();
+    let packets = buffer.get_packets_for_duration(60);
 
-    // Verify monotonic sequence numbers
+    // Verify insertion order is preserved (PTS non-decreasing)
     for window in packets.windows(2) {
         assert!(
-            window[1].sequence > window[0].sequence,
-            "sequence numbers must be monotonically increasing"
+            window[1].pts >= window[0].pts,
+            "packets must stay in insertion order"
         );
     }
 
@@ -221,7 +218,7 @@ fn config_validation_rejects_save_exceeding_buffer() {
 #[tokio::test]
 async fn save_guard_prevents_concurrent_saves() {
     let config = test_config();
-    let app = mebal::App::new(config);
+    let app = mebal::AppState::new(config);
 
     // Fill buffer so save_replay has packets to work with
     fill_buffer(&app.packet_buffer, 10, 60, 60, false);

@@ -11,7 +11,7 @@
 //! # Example Usage
 //!
 //! ```no_run
-//! use mebal::{App, Config, CaptureManager, PacketBuffer, GOP_INTERVAL_SECS};
+//! use mebal::{AppState, Config, CaptureManager, PacketBuffer, GOP_INTERVAL_SECS};
 //! use std::sync::Arc;
 //! use std::time::Instant;
 //! use tokio_util::sync::CancellationToken;
@@ -19,7 +19,7 @@
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     let config = Config::load()?;
-//!     let app = App::new(config.clone());
+//!     let app = AppState::new(config.clone());
 //!     let cancel = CancellationToken::new();
 //!     let capture_start = Instant::now();
 //!
@@ -37,7 +37,6 @@ pub mod app;
 pub mod buffer;
 pub mod capture;
 pub mod config;
-pub mod error;
 pub mod hotkey;
 pub mod writer;
 
@@ -46,7 +45,6 @@ pub use buffer::PacketBuffer;
 pub use capture::CaptureManager;
 pub use capture::audio::AudioCaptureManager;
 pub use config::Config;
-pub use error::{MebalError, MebalResult};
 pub use hotkey::HotkeyManager;
 pub use writer::VideoWriter;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

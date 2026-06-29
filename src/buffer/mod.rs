@@ -10,7 +10,6 @@
 
 use parking_lot::RwLock;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -40,10 +39,9 @@ pub struct PacketBuffer {
 }
 
 struct BufferInner {
-    packets: VecDeque<Arc<Packet>>,
+    packets: VecDeque<Packet>,
     total_bytes: usize,
     max_bytes: usize,
-    sequence: u64,
 }
 
 /// VBR headroom: 1.25x
@@ -73,7 +71,6 @@ impl PacketBuffer {
                 packets: VecDeque::with_capacity(estimated_packets),
                 total_bytes: 0,
                 max_bytes,
-                sequence: 0,
             }),
             max_duration_secs: AtomicU32::new(max_duration_secs),
             fps: AtomicU32::new(fps),
@@ -87,17 +84,11 @@ impl PacketBuffer {
         let mut inner = self.inner.write();
 
         let packet_size = packet.data.len();
-        let sequence = inner.sequence;
-        inner.sequence += 1;
-
-        let mut packet = packet;
-        packet.sequence = sequence;
         inner.total_bytes += packet_size;
-        inner.packets.push_back(Arc::new(packet));
+        inner.packets.push_back(packet);
 
         trace!(
-            "Added packet #{} ({} bytes), total: {} bytes, count: {}",
-            sequence,
+            "Added packet ({} bytes), total: {} bytes, count: {}",
             packet_size,
             inner.total_bytes,
             inner.packets.len()
@@ -107,7 +98,7 @@ impl PacketBuffer {
     }
 
     /// Returns packets for the last `duration_secs`, plus GOP overfetch for keyframe alignment.
-    pub fn get_packets_for_duration(&self, duration_secs: u32) -> Vec<Arc<Packet>> {
+    pub fn get_packets_for_duration(&self, duration_secs: u32) -> Vec<Packet> {
         let inner = self.inner.read();
 
         if inner.packets.is_empty() {
@@ -125,7 +116,7 @@ impl PacketBuffer {
 
         let mut packets = Vec::with_capacity(count);
         for i in start_idx..inner.packets.len() {
-            packets.push(Arc::clone(&inner.packets[i]));
+            packets.push(inner.packets[i].clone());
         }
 
         debug!(
@@ -138,11 +129,6 @@ impl PacketBuffer {
         );
 
         packets
-    }
-
-    pub fn get_all_packets(&self) -> Vec<Arc<Packet>> {
-        let inner = self.inner.read();
-        inner.packets.iter().cloned().collect()
     }
 
     pub fn stats(&self) -> BufferStats {
@@ -167,7 +153,6 @@ impl PacketBuffer {
         let mut inner = self.inner.write();
         inner.packets.clear();
         inner.total_bytes = 0;
-        inner.sequence = 0;
         debug!("Buffer cleared");
     }
 

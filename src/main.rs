@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use clap::Parser;
-use mebal::{App, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
+use mebal::{AppState, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
     info!("  Output directory: {}", config.output_directory);
     info!("  Hotkey: {}", config.hotkey);
 
-    let app = App::new(config.clone());
+    let app = AppState::new(config.clone());
     let cancel_token = CancellationToken::new();
     let capture_start = std::time::Instant::now();
 
@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
             Ok(capture) => {
                 if let Err(e) = capture.run_blocking(capture_buffer, capture_cancel, capture_start)
                 {
-                    error!("Capture error: {}", e);
+                    error!("Capture error: {:#}", e);
                 }
             }
             Err(e) => {
@@ -155,11 +155,15 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Hotkey handler
+    // Hotkey handler. The callback fires on livesplit-hotkey's keyboard-hook
+    // thread, which is outside the tokio runtime — enter it so `tracker.spawn`
+    // (and the save's `spawn_blocking`) have a reactor.
     let hotkey_app = app.clone();
     let tracker = app.tracker().clone();
+    let rt_handle = tokio::runtime::Handle::current();
     let _hotkey_manager = HotkeyManager::new(&config.hotkey, move || {
         let app = hotkey_app.clone();
+        let _enter = rt_handle.enter();
         tracker.spawn(async move {
             if let Err(e) = app.save_replay().await {
                 error!("Failed to save replay: {}", e);

@@ -25,11 +25,13 @@ pub fn create_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 let handle = app.clone();
                 let ts = handle.state::<TauriAppState>();
                 let inner = ts.inner.clone();
-                ts.task_tracker.spawn(async move {
+                // ponytail: async_runtime::spawn works off-runtime (this runs on
+                // Tauri's main thread); track_future keeps TaskTracker draining.
+                tauri::async_runtime::spawn(ts.task_tracker.track_future(async move {
                     if let Err(e) = inner.save_replay().await {
                         error!("Failed to save replay: {}", e);
                     }
-                });
+                }));
             }
             "settings" => {
                 show_settings_window(app);
@@ -68,11 +70,13 @@ pub fn register_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error
         let handle = handle.clone();
         let ts = handle.state::<TauriAppState>();
         let inner = ts.inner.clone();
-        ts.task_tracker.spawn(async move {
+        // ponytail: hotkey callback runs on livesplit's hook thread with no Tokio
+        // runtime; async_runtime::spawn works from any thread (the bug fix).
+        tauri::async_runtime::spawn(ts.task_tracker.track_future(async move {
             if let Err(e) = inner.save_replay().await {
                 error!("Failed to save replay via hotkey: {}", e);
             }
-        });
+        }));
     })?;
 
     ts.set_hotkey_manager(manager);

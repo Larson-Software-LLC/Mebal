@@ -17,15 +17,6 @@ pub enum PacketType {
     Audio,
 }
 
-impl fmt::Display for PacketType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Video => f.write_str("video"),
-            Self::Audio => f.write_str("audio"),
-        }
-    }
-}
-
 /// A packet of encoded media data
 #[derive(Clone)]
 pub struct Packet {
@@ -43,8 +34,6 @@ pub struct Packet {
     pub duration: i64,
     /// Whether this is a keyframe
     pub is_keyframe: bool,
-    /// Sequence number assigned by the buffer
-    pub sequence: u64,
     /// Stream index from the encoder
     pub stream_index: usize,
 }
@@ -60,7 +49,6 @@ impl Packet {
             dts: 0,
             duration: 0,
             is_keyframe: false,
-            sequence: 0,
             stream_index: 0,
         }
     }
@@ -78,7 +66,6 @@ impl Packet {
             dts: ffmpeg_packet.dts().unwrap_or(0),
             duration: ffmpeg_packet.duration(),
             is_keyframe: ffmpeg_packet.is_key(),
-            sequence: 0,
             stream_index: ffmpeg_packet.stream(),
         }
     }
@@ -105,7 +92,6 @@ impl fmt::Debug for Packet {
             .field("pts", &self.pts)
             .field("dts", &self.dts)
             .field("is_keyframe", &self.is_keyframe)
-            .field("sequence", &self.sequence)
             .finish()
     }
 }
@@ -154,12 +140,6 @@ mod tests {
         assert_eq!(packet.data.as_ref(), data.as_slice());
         assert_eq!(packet.packet_type, PacketType::Video);
         assert_eq!(packet.data.len(), 5);
-    }
-
-    #[test]
-    fn test_packet_type_display() {
-        assert_eq!(PacketType::Video.to_string(), "video");
-        assert_eq!(PacketType::Audio.to_string(), "audio");
     }
 
     #[test]

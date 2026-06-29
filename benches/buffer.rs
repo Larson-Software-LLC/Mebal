@@ -86,40 +86,18 @@ fn bench_get_packets(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// get_all_packets (full buffer clone)
-// ---------------------------------------------------------------------------
-
-fn bench_get_all(c: &mut Criterion) {
-    let mut group = c.benchmark_group("get_all_packets");
-
-    for &buffer_secs in &[60u32, 300] {
-        let buffer = PacketBuffer::new(buffer_secs, 60, 8000, 2);
-        fill_buffer(&buffer, buffer_secs);
-
-        group.bench_function(format!("buf{}s", buffer_secs), |b| {
-            b.iter(|| {
-                black_box(buffer.get_all_packets());
-            });
-        });
-    }
-
-    group.finish();
-}
-
-// ---------------------------------------------------------------------------
 // trim_to_keyframe
 // ---------------------------------------------------------------------------
 
 fn bench_trim_to_keyframe(c: &mut Criterion) {
     use mebal::writer::trim_to_keyframe;
-    use std::sync::Arc;
 
     let mut group = c.benchmark_group("trim_to_keyframe");
 
     // Build a realistic packet slice: 30s @ 60fps = 1800 packets,
     // keyframe every 120 frames. First keyframe at index 0.
-    let packets: Vec<Arc<Packet>> = (0..1800)
-        .map(|i| Arc::new(make_packet(i, (i as u32) % 120 == 0)))
+    let packets: Vec<Packet> = (0..1800)
+        .map(|i| make_packet(i, (i as u32) % 120 == 0))
         .collect();
 
     group.bench_function("1800_packets", |b| {
@@ -132,8 +110,8 @@ fn bench_trim_to_keyframe(c: &mut Criterion) {
     });
 
     // Worst case: keyframe only at the very end
-    let worst: Vec<Arc<Packet>> = (0..1800)
-        .map(|i| Arc::new(make_packet(i, i == 1799)))
+    let worst: Vec<Packet> = (0..1800)
+        .map(|i| make_packet(i, i == 1799))
         .collect();
 
     group.bench_function("1800_packets_late_keyframe", |b| {
@@ -190,7 +168,6 @@ criterion_group!(
     benches,
     bench_push,
     bench_get_packets,
-    bench_get_all,
     bench_trim_to_keyframe,
     bench_contended,
 );

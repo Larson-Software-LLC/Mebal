@@ -26,11 +26,11 @@ The Tauri GUI lives in `src-tauri/`; run it with `cargo tauri dev` from that dir
 
 `main.rs` spawns three blocking workers (video capture, audio capture, hotkey hook) and joins them with `tokio::select!` against `Ctrl+C`:
 
-1. **CaptureManager** (`src/capture/mod.rs`) — DXGI Desktop Duplication → BGRA→NV12 scaling (sws) → H.264 encode (NVENC, libx264 fallback). Reconnects on DXGI errors up to 20 times. Pushes encoded packets into the shared buffer.
+1. **CaptureManager** (`src/capture/mod.rs`) — DXGI Desktop Duplication → GPU BGRA→NV12 conversion + scaling via D3D11 pixel shaders (`src/capture/shader.rs`, OBS-style) → H.264 encode (NVENC, libx264 fallback). Reconnects on DXGI errors up to 20 times. Pushes encoded packets into the shared buffer.
 2. **AudioCaptureManager** (`src/capture/audio.rs`) — WASAPI loopback via `cpal` → AAC encode (FFmpeg) → shared buffer. Failure is non-fatal; capture continues video-only.
 3. **HotkeyManager** (`src/hotkey/`) — Non-exclusive global hotkey via `livesplit-hotkey` (low-level keyboard hook on its own thread). Callback runs save asynchronously through the app's `TaskTracker` so Ctrl+C drains in-flight saves before exit.
 
-Shared state flows through `App` (a `Clone` newtype over `Arc<AppState>`, defined in `src/app.rs`):
+Shared state flows through `App` (a type alias for `Arc<AppState>`, defined in `src/app.rs`):
 - `Arc<PacketBuffer>` — circular buffer holding both video and audio packets
 - `ArcSwap<Config>` — hot-swappable config (GUI updates it at runtime)
 - `AtomicBool` saving guard to prevent overlapping saves
@@ -52,11 +52,10 @@ WASAPI loop ──┘                  └── (status poll, GUI events)
 |--------|------|---------|
 | `app` | `src/app.rs` | `App`/`AppState`: shared buffer, hot-swappable config, save coordination, `TaskTracker` |
 | `buffer` | `src/buffer/mod.rs`, `packet.rs` | Mixed-stream circular buffer (H.264 + AAC) with age + byte eviction; PTS-windowed retrieval with GOP overfetch; stores codec extradata + audio params |
-| `capture` | `src/capture/mod.rs`, `audio.rs`, `dxgi.rs`, `encoder_setup.rs` | DXGI video capture, WASAPI audio capture, NVENC/libx264 encoder selection |
+| `capture` | `src/capture/mod.rs`, `audio.rs`, `dxgi.rs`, `shader.rs`, `encoder_setup.rs` | DXGI video capture, GPU NV12 shader conversion, WASAPI audio capture, NVENC/libx264 encoder selection |
 | `hotkey` | `src/hotkey/mod.rs`, `parser.rs` | Non-exclusive global hotkey via `livesplit-hotkey`; parses `"Ctrl+Shift+F9"` strings |
 | `writer` | `src/writer/mod.rs` | Muxes pre-encoded video + audio packets into MP4; trims to first video keyframe; rebases PTS/DTS per stream; drops non-monotonic packets |
 | `config` | `src/config.rs` | TOML config with platform paths, CLI overrides, validation; defines `GOP_INTERVAL_SECS = 1` |
-| `error` | `src/error.rs` | `MebalError` enum and `MebalResult<T>` |
 
 ### FFmpeg integration
 

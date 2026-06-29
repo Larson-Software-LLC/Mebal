@@ -174,8 +174,8 @@ impl AudioCaptureManager {
             extradata,
         });
 
-        // --- Set up crossbeam channel for cpal callback -> processing thread ---
-        let (tx, rx) = crossbeam::channel::bounded::<Vec<f32>>(64);
+        // --- Set up channel for cpal callback -> processing thread ---
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(64);
 
         // --- Start cpal input stream on the output device (loopback) ---
         let stream_config = cpal::StreamConfig {
@@ -242,8 +242,8 @@ impl AudioCaptureManager {
                 Ok(samples) => {
                     pcm_buffer.extend_from_slice(&samples);
                 }
-                Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
-                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     warn!("Audio channel disconnected");
                     break;
                 }
