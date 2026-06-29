@@ -4,7 +4,7 @@ A high-performance replay buffer for continuous video recording, written in Rust
 
 ## License
 
-MIT License - See LICENSE file for details.
+See LICENSE file for details.
 
 ## Acknowledgments
 
