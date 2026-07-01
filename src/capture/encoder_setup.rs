@@ -102,10 +102,7 @@ fn build_encoder(
 
 /// Get information about available hardware encoders by probing FFmpeg.
 pub fn get_encoder_info() -> Vec<(String, bool)> {
-    let encoders = [
-        ("h264_nvenc", "NVIDIA NVENC"),
-        ("h264_amf", "AMD AMF"),
-    ];
+    let encoders = [("h264_nvenc", "NVIDIA NVENC"), ("h264_amf", "AMD AMF")];
 
     encoders
         .iter()

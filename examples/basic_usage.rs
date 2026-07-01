@@ -73,12 +73,7 @@ async fn main() -> Result<()> {
 
             // Save to file
             let output_path = "replay_example.mp4";
-            let writer = VideoWriter::new(
-                &config,
-                extradata,
-                None,
-                ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264,
-            );
+            let writer = VideoWriter::new(&config, extradata, None);
 
             let path = output_path.to_string();
             match tokio::task::spawn_blocking(move || writer.write_packets_blocking(packets, &path))

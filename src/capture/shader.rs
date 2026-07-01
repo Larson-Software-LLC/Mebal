@@ -19,7 +19,9 @@ use anyhow::{Context, Result};
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, ID3DBlob};
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
+};
 use windows::core::{PCSTR, s};
 
 /// Build the HLSL, baking in the SDR-white scale used by the HDR tone-map.
@@ -82,7 +84,14 @@ pub struct Converter {
 impl Converter {
     /// SDR BGRA->BGRA scaler (used only when desktop size != encode size).
     pub fn passthrough(device: &ID3D11Device, enc_w: u32, enc_h: u32) -> Result<Self> {
-        Self::new(device, enc_w, enc_h, DXGI_FORMAT_B8G8R8A8_UNORM, s!("PSCopy"), 1.0)
+        Self::new(
+            device,
+            enc_w,
+            enc_h,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            s!("PSCopy"),
+            1.0,
+        )
     }
 
     /// HDR FP16 scRGB -> SDR sRGB BGRA tone-mapper. `sdr_white` is the scRGB value
@@ -175,7 +184,8 @@ impl Converter {
             let mut desc = D3D11_TEXTURE2D_DESC::default();
             src.GetDesc(&mut desc);
             if desc.Width != self.src_w || desc.Height != self.src_h {
-                let (tex, srv) = make_source(&self.device, desc.Width, desc.Height, self.src_format)?;
+                let (tex, srv) =
+                    make_source(&self.device, desc.Width, desc.Height, self.src_format)?;
                 self.src_tex = tex;
                 self.srv = srv.unwrap();
                 self.src_w = desc.Width;

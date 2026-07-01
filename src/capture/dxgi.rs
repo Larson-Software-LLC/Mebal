@@ -244,7 +244,10 @@ impl DxgiCapture {
         }
         self.hdr = dup.hdr;
         self.sdr_white_scale = dup.sdr_white_scale;
-        debug!("DXGI reconnected: {}x{} hdr={}", self.width, self.height, self.hdr);
+        debug!(
+            "DXGI reconnected: {}x{} hdr={}",
+            self.width, self.height, self.hdr
+        );
         Ok(())
     }
 }

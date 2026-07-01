@@ -54,7 +54,7 @@ fn fill_buffer(
 ) {
     let total_frames = (seconds * fps) as i64;
     for i in 0..total_frames {
-        let is_key = (i as u32) % gop_frames == 0;
+        let is_key = (i as u32).is_multiple_of(gop_frames);
         buffer.push(video_packet(i, is_key, 4096));
 
         if include_audio && i % 2 == 0 {
@@ -200,8 +200,10 @@ fn config_deserializes_with_missing_fields() {
 
 #[test]
 fn config_validation_rejects_zero_fps() {
-    let mut config = Config::default();
-    config.fps = 0;
+    let config = Config {
+        fps: 0,
+        ..Default::default()
+    };
     assert!(config.validate().is_err());
 }
 
@@ -271,19 +273,8 @@ fn buffer_reconfigure_updates_parameters() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Writer with real MP4 fixture (skipped if fixture not present)
-// ---------------------------------------------------------------------------
-
 /// If a test fixture MP4 exists at `tests/fixtures/sample.mp4`, demux it,
 /// push the packets through the buffer, and write them back to a new file.
-///
-/// This verifies the full demux → buffer → writer round-trip.
-///
-/// The fixture may use any codec (H.264, HEVC, etc.) and frame rate.
-/// We detect the actual fps from the stream and assign sequential
-/// frame-number DTS/PTS to avoid precision loss from timebase rescaling
-/// (the live capture pipeline always produces sequential DTS anyway).
 #[test]
 fn writer_round_trip_with_fixture() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -317,8 +308,8 @@ fn writer_round_trip_with_fixture() {
         .unwrap_or(30)
         .max(1);
 
-    // Collect extradata, resolution, and codec ID from the fixture
-    let (extradata, width, height, codec_id) = {
+    // Collect extradata and resolution from the fixture
+    let (extradata, width, height) = {
         let stream = input_ctx.stream(video_stream_idx).unwrap();
         let params = stream.parameters();
         unsafe {
@@ -332,12 +323,7 @@ fn writer_round_trip_with_fixture() {
                 )
                 .to_vec()
             };
-            (
-                extra,
-                (*codecpar).width as u32,
-                (*codecpar).height as u32,
-                (*codecpar).codec_id,
-            )
+            (extra, (*codecpar).width as u32, (*codecpar).height as u32)
         }
     };
 
@@ -394,7 +380,7 @@ fn writer_round_trip_with_fixture() {
         audio_enabled: false,
         ..test_config()
     };
-    let writer = VideoWriter::new(&config, extradata, None, codec_id);
+    let writer = VideoWriter::new(&config, extradata, None);
     let result = writer.write_packets_blocking(retrieved, &output);
     assert!(result.is_ok(), "writer should succeed: {:?}", result.err());
 

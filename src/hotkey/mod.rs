@@ -43,20 +43,13 @@ impl HotkeyManager {
 
         Ok(Self { hook, hotkey })
     }
-
-    /// Unregister the hotkey
-    pub fn unregister(&self) -> Result<()> {
-        self.hook
-            .unregister(self.hotkey)
-            .context("Failed to unregister hotkey")?;
-        debug!("Unregistered hotkey");
-        Ok(())
-    }
 }
 
 impl Drop for HotkeyManager {
     fn drop(&mut self) {
-        let _ = self.unregister();
+        if let Err(e) = self.hook.unregister(self.hotkey) {
+            debug!("Failed to unregister hotkey: {}", e);
+        }
     }
 }
 

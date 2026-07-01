@@ -88,6 +88,7 @@ impl PacketBuffer {
         let mut inner = self.inner.write();
 
         let packet_size = packet.data.len();
+        let now = packet.timestamp;
         inner.total_bytes += packet_size;
         inner.packets.push_back(Arc::new(packet));
 
@@ -98,7 +99,11 @@ impl PacketBuffer {
             inner.packets.len()
         );
 
-        Self::evict_old_packets(&mut inner, self.max_duration_secs.load(Ordering::Relaxed));
+        Self::evict_old_packets(
+            &mut inner,
+            self.max_duration_secs.load(Ordering::Relaxed),
+            now,
+        );
     }
 
     /// Returns packets for the last `duration_secs`, plus GOP overfetch for keyframe alignment.
@@ -109,7 +114,7 @@ impl PacketBuffer {
             return Vec::new();
         }
 
-        let last_pts = inner.packets.back().unwrap().pts;
+        let last_pts = inner.packets.back().expect("non-empty: checked above").pts;
         let gop_secs = self.gop_secs.load(Ordering::Relaxed) as i64;
         let fps = self.fps.load(Ordering::Relaxed) as i64;
         let fetch_secs = duration_secs as i64 + gop_secs;
@@ -139,8 +144,8 @@ impl PacketBuffer {
         let inner = self.inner.read();
         let fps = self.fps.load(Ordering::Relaxed);
         let duration_secs = if inner.packets.len() >= 2 {
-            let first_pts = inner.packets.front().unwrap().pts;
-            let last_pts = inner.packets.back().unwrap().pts;
+            let first_pts = inner.packets.front().expect("len >= 2: checked above").pts;
+            let last_pts = inner.packets.back().expect("len >= 2: checked above").pts;
             ((last_pts - first_pts) / fps as i64) as u32
         } else {
             0
@@ -197,13 +202,15 @@ impl PacketBuffer {
         self.audio_params.get().cloned()
     }
 
-    fn evict_old_packets(inner: &mut BufferInner, max_duration_secs: u32) {
-        let now = Instant::now();
+    fn evict_old_packets(inner: &mut BufferInner, max_duration_secs: u32, now: Instant) {
         let max_age = Duration::from_secs(max_duration_secs as u64);
 
         while let Some(front) = inner.packets.front() {
             if now.saturating_duration_since(front.timestamp) > max_age {
-                let removed = inner.packets.pop_front().unwrap();
+                let removed = inner
+                    .packets
+                    .pop_front()
+                    .expect("front exists: while-let guard");
                 inner.total_bytes -= removed.data.len();
             } else {
                 break;
@@ -321,7 +328,7 @@ mod tests {
         let first_pts = packets.first().unwrap().pts;
         let last_pts = packets.last().unwrap().pts;
         let fetched_duration = (last_pts - first_pts) as f64 / fps as f64;
-        assert!(fetched_duration >= 6.9 && fetched_duration <= 7.1);
+        assert!((6.9..=7.1).contains(&fetched_duration));
     }
 
     #[test]

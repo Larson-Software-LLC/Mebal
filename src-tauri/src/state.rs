@@ -2,7 +2,9 @@
 // All rights reserved.
 // This source code is proprietary and confidential.
 
-use mebal::{App, AppState, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
+use mebal::capture::audio::run_audio_capture;
+use mebal::capture::run_video_capture;
+use mebal::{App, AppState, Config, HotkeyManager};
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::sync::Arc;
@@ -11,7 +13,7 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 pub struct TauriAppState {
     pub inner: App,
@@ -20,6 +22,12 @@ pub struct TauriAppState {
     hotkey_manager: Mutex<Option<HotkeyManager>>,
     capture_threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
     pub task_tracker: TaskTracker,
+    /// Fixed for the app's lifetime — packet PTS is `elapsed since this` * fps.
+    /// Must not be reset on stop/start-capture cycles: buffered packets from
+    /// before a pause keep their PTS, and re-anchoring to a fresh `Instant::now()`
+    /// on resume would make new packets' PTS lower than the still-buffered old
+    /// ones, breaking the buffer's ascending-PTS invariant.
+    capture_epoch: Instant,
 }
 
 #[derive(Clone, Serialize)]
@@ -43,6 +51,7 @@ impl TauriAppState {
             hotkey_manager: Mutex::new(None),
             capture_threads: Mutex::new(Vec::new()),
             task_tracker: TaskTracker::new(),
+            capture_epoch: Instant::now(),
         }
     }
 
@@ -74,22 +83,15 @@ impl TauriAppState {
 
         let config = self.inner.config();
         let cancel = CancellationToken::new();
-        let capture_start = Instant::now();
+        let capture_start = self.capture_epoch;
 
         let mut threads = self.capture_threads.lock();
 
         let buffer = Arc::clone(&self.inner.packet_buffer);
         let video_cancel = cancel.clone();
         let video_config = (*config).clone();
-        let video_handle = std::thread::spawn(move || match CaptureManager::new(&video_config) {
-            Ok(capture) => {
-                if let Err(e) = capture.run_blocking(buffer, video_cancel, capture_start) {
-                    error!("Capture error: {}", e);
-                }
-            }
-            Err(e) => {
-                error!("Failed to create capture manager: {}", e);
-            }
+        let video_handle = std::thread::spawn(move || {
+            run_video_capture(&video_config, buffer, video_cancel, capture_start)
         });
         threads.push(video_handle);
 
@@ -98,10 +100,7 @@ impl TauriAppState {
             let audio_cancel = cancel.clone();
             let audio_config = (*config).clone();
             let audio_handle = std::thread::spawn(move || {
-                let audio = AudioCaptureManager::new(&audio_config);
-                if let Err(e) = audio.run_blocking(buffer, audio_cancel, capture_start) {
-                    warn!("Audio capture failed: {} — continuing video-only", e);
-                }
+                run_audio_capture(&audio_config, buffer, audio_cancel, capture_start)
             });
             threads.push(audio_handle);
         }

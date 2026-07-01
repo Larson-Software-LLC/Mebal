@@ -24,7 +24,7 @@ pub fn parse_hotkey(s: &str) -> Result<Hotkey> {
     }
 
     // Last part is the key code
-    let key_str = parts.last().unwrap();
+    let key_str = parts.last().expect("split yields >= 1 element");
     let key_code = parse_key_code(key_str)?;
 
     // All other parts are modifiers

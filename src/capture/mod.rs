@@ -14,7 +14,7 @@ use ffmpeg_sys_next as ff;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::core::Interface;
 
@@ -254,7 +254,7 @@ impl CaptureManager {
 
             frame_count += 1;
 
-            if frame_count % (fps as u64) == 0 {
+            if frame_count.is_multiple_of(fps as u64) {
                 let stats = buffer.stats();
                 debug!(
                     "Captured {} frames ({:.1} actual fps), buffer: {} packets ({:.1} MB)",
@@ -280,5 +280,28 @@ impl CaptureManager {
 
         info!("Capture loop ended after {} frames", frame_count);
         Ok(())
+    }
+}
+
+/// Create a `CaptureManager` and run it to completion, logging errors.
+///
+/// Shared by the CLI (`tokio::spawn_blocking`) and the Tauri GUI
+/// (`std::thread::spawn`) — each picks its own spawn mechanism, but the
+/// "create manager, run, log failure" sequence is identical either way.
+pub fn run_video_capture(
+    config: &Config,
+    buffer: Arc<PacketBuffer>,
+    cancel: CancellationToken,
+    capture_start: Instant,
+) {
+    match CaptureManager::new(config) {
+        Ok(capture) => {
+            if let Err(e) = capture.run_blocking(buffer, cancel, capture_start) {
+                error!("Capture error: {:#}", e);
+            }
+        }
+        Err(e) => {
+            error!("Failed to create capture manager: {}", e);
+        }
     }
 }

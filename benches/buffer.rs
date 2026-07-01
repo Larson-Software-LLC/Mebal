@@ -25,7 +25,7 @@ fn fill_buffer(buffer: &PacketBuffer, seconds: u32) {
     let gop_frames = 120u32;
     let total = (seconds * fps) as i64;
     for i in 0..total {
-        buffer.push(make_packet(i, (i as u32) % gop_frames == 0));
+        buffer.push(make_packet(i, (i as u32).is_multiple_of(gop_frames)));
     }
 }
 
@@ -38,7 +38,7 @@ fn bench_push(c: &mut Criterion) {
 
     // Pre-build packets so allocation isn't measured
     let packets: Vec<Packet> = (0..600)
-        .map(|i| make_packet(i, (i as u32) % 120 == 0))
+        .map(|i| make_packet(i, (i as u32).is_multiple_of(120)))
         .collect();
 
     group.bench_function("60fps_10s", |b| {
@@ -98,7 +98,7 @@ fn bench_trim_to_keyframe(c: &mut Criterion) {
     // Build a realistic packet slice: 30s @ 60fps = 1800 packets,
     // keyframe every 120 frames. First keyframe at index 0.
     let packets: Vec<Arc<Packet>> = (0..1800)
-        .map(|i| Arc::new(make_packet(i, (i as u32) % 120 == 0)))
+        .map(|i| Arc::new(make_packet(i, (i as u32).is_multiple_of(120))))
         .collect();
 
     group.bench_function("1800_packets", |b| {

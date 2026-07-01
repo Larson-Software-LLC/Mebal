@@ -3,6 +3,9 @@ name = "mebal-gui"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

@@ -372,3 +372,19 @@ impl AudioCaptureManager {
         Ok(())
     }
 }
+
+/// Create an `AudioCaptureManager` and run it to completion, logging errors.
+///
+/// Audio failure is non-fatal — capture continues video-only. Shared by the
+/// CLI (`tokio::spawn_blocking`) and the Tauri GUI (`std::thread::spawn`).
+pub fn run_audio_capture(
+    config: &Config,
+    buffer: Arc<PacketBuffer>,
+    cancel: CancellationToken,
+    capture_start: Instant,
+) {
+    let audio = AudioCaptureManager::new(config);
+    if let Err(e) = audio.run_blocking(buffer, cancel, capture_start) {
+        warn!("Audio capture failed: {} — continuing video-only", e);
+    }
+}

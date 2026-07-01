@@ -10,6 +10,9 @@ description = "A replay buffer for continuous video recording with instant repla
 license-file = "LICENSE"
 repository = "https://github.com/yourusername/mebal"
 
+[lints]
+workspace = true
+
 [dependencies]
 ffmpeg-next = "7.0"
 ffmpeg-sys-next = { version = "7.0", features = ["static"] }
@@ -74,3 +77,14 @@ harness = false
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# Shared lints so style debt can't silently re-accumulate. Correctness/suspicious/
+# perf are deny/warn by default and stay on. Deliberately NOT enabling
+# clippy::unwrap_used (remaining unwraps are documented invariants) or the
+# pedantic/nursery groups (noisy, churny across toolchain bumps).
+[workspace.lints.clippy]
+manual_is_multiple_of = "warn"
+collapsible_if = "warn"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"

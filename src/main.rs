@@ -11,7 +11,9 @@
 
 use anyhow::Result;
 use clap::Parser;
-use mebal::{AppState, AudioCaptureManager, CaptureManager, Config, HotkeyManager};
+use mebal::capture::audio::run_audio_capture;
+use mebal::capture::run_video_capture;
+use mebal::{AppState, Config, HotkeyManager};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -125,18 +127,14 @@ async fn main() -> Result<()> {
     let capture_buffer = Arc::clone(&app.packet_buffer);
     let capture_cancel = cancel_token.clone();
     let capture_config = config.clone();
-    let capture_handle =
-        tokio::task::spawn_blocking(move || match CaptureManager::new(&capture_config) {
-            Ok(capture) => {
-                if let Err(e) = capture.run_blocking(capture_buffer, capture_cancel, capture_start)
-                {
-                    error!("Capture error: {:#}", e);
-                }
-            }
-            Err(e) => {
-                error!("Failed to create capture manager: {}", e);
-            }
-        });
+    let capture_handle = tokio::task::spawn_blocking(move || {
+        run_video_capture(
+            &capture_config,
+            capture_buffer,
+            capture_cancel,
+            capture_start,
+        )
+    });
 
     // Audio capture
     let audio_enabled = config.audio_enabled;
@@ -145,10 +143,7 @@ async fn main() -> Result<()> {
         let audio_cancel = cancel_token.clone();
         let audio_config = config.clone();
         Some(tokio::task::spawn_blocking(move || {
-            let audio = AudioCaptureManager::new(&audio_config);
-            if let Err(e) = audio.run_blocking(audio_buffer, audio_cancel, capture_start) {
-                warn!("Audio capture failed: {} — continuing video-only", e);
-            }
+            run_audio_capture(&audio_config, audio_buffer, audio_cancel, capture_start)
         }))
     } else {
         info!("Audio capture disabled");

@@ -123,12 +123,7 @@ impl AppState {
 
         let path = output_path.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let writer = VideoWriter::new(
-                &config,
-                extradata,
-                audio_params,
-                ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264,
-            );
+            let writer = VideoWriter::new(&config, extradata, audio_params);
             writer.write_packets_blocking(packets, &path)
         })
         .await;

@@ -26,87 +26,46 @@ const DEFAULT_RESOLUTION: (u32, u32) = (2560, 1440);
 /// a keyframe without shortening the clip.
 pub const GOP_INTERVAL_SECS: u32 = 1;
 
-macro_rules! serde_default {
-    ($name:ident, $type:ty, $value:expr) => {
-        fn $name() -> $type {
-            $value
-        }
-    };
-}
-
-serde_default!(
-    default_output_dir,
-    String,
-    dirs::video_dir()
-        .map(|p: PathBuf| p.join("mebal").to_string_lossy().to_string())
-        .unwrap_or_else(|| "./recordings".to_string())
-);
-serde_default!(default_output_prefix, String, "replay".to_string());
-serde_default!(default_hotkey, String, "F9".to_string());
-serde_default!(default_resolution, (u32, u32), DEFAULT_RESOLUTION);
-
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     /// Duration of the circular buffer in seconds
-    #[serde(default = "default_buffer_duration")]
     pub buffer_duration_secs: u32,
 
     /// Duration of saved clips in seconds
-    #[serde(default = "default_save_duration")]
     pub save_duration_secs: u32,
 
     /// Video bitrate in kbps
-    #[serde(default = "default_bitrate_kbps")]
     pub bitrate_kbps: usize,
 
     /// Frames per second
-    #[serde(default = "default_fps")]
     pub fps: u32,
 
     /// Output directory for saved replays
-    #[serde(default = "default_output_dir")]
     pub output_directory: String,
 
     /// Output filename prefix
-    #[serde(default = "default_output_prefix")]
     pub output_prefix: String,
 
     /// Hotkey combination for triggering save
-    #[serde(default = "default_hotkey")]
     pub hotkey: String,
 
     /// Video resolution (width, height)
-    #[serde(default = "default_resolution")]
     pub resolution: (u32, u32),
 
-    /// Capture source (window title for gdigrab, or None for full desktop)
-    #[serde(default)]
+    /// Capture source (monitor index, or None for primary)
     pub capture_source: Option<String>,
 
-    /// Encoder to use: "h264_nvenc", "libx264", or None for auto-detect
-    #[serde(default)]
+    /// Encoder to use: "h264_nvenc", "h264_amf", or None for auto-detect
     pub encoder: Option<String>,
 
     /// Whether audio capture is enabled
-    #[serde(default = "default_audio_enabled")]
     pub audio_enabled: bool,
 
     /// Audio bitrate in kbps
-    #[serde(default = "default_audio_bitrate_kbps")]
     pub audio_bitrate_kbps: usize,
 }
-
-serde_default!(default_buffer_duration, u32, DEFAULT_BUFFER_DURATION);
-serde_default!(default_save_duration, u32, DEFAULT_SAVE_DURATION);
-serde_default!(default_bitrate_kbps, usize, DEFAULT_BITRATE_KBPS);
-serde_default!(default_fps, u32, DEFAULT_FPS);
-serde_default!(default_audio_enabled, bool, true);
-serde_default!(
-    default_audio_bitrate_kbps,
-    usize,
-    DEFAULT_AUDIO_BITRATE_KBPS
-);
 
 impl Default for Config {
     fn default() -> Self {
@@ -115,10 +74,12 @@ impl Default for Config {
             save_duration_secs: DEFAULT_SAVE_DURATION,
             bitrate_kbps: DEFAULT_BITRATE_KBPS,
             fps: DEFAULT_FPS,
-            output_directory: default_output_dir(),
-            output_prefix: default_output_prefix(),
-            hotkey: default_hotkey(),
-            resolution: default_resolution(),
+            output_directory: dirs::video_dir()
+                .map(|p: PathBuf| p.join("mebal").to_string_lossy().to_string())
+                .unwrap_or_else(|| "./recordings".to_string()),
+            output_prefix: "replay".to_string(),
+            hotkey: "F9".to_string(),
+            resolution: DEFAULT_RESOLUTION,
             capture_source: None,
             encoder: None,
             audio_enabled: true,

@@ -19,7 +19,6 @@ pub struct VideoParams {
     pub fps: u32,
     pub bitrate_kbps: usize,
     pub extradata: Vec<u8>,
-    pub codec_id: ffmpeg_sys_next::AVCodecID,
 }
 
 /// Video writer for saving replay clips
@@ -34,7 +33,6 @@ impl VideoWriter {
         config: &Config,
         codec_extradata: Vec<u8>,
         audio_params: Option<AudioParams>,
-        codec_id: ffmpeg_sys_next::AVCodecID,
     ) -> Self {
         Self {
             video_params: VideoParams {
@@ -43,7 +41,6 @@ impl VideoWriter {
                 fps: config.fps,
                 bitrate_kbps: config.bitrate_kbps,
                 extradata: codec_extradata,
-                codec_id,
             },
             audio_params,
             audio_bitrate_kbps: config.audio_bitrate_kbps,
@@ -84,7 +81,8 @@ impl VideoWriter {
         // Add video stream via raw FFI — we're muxing pre-encoded packets, no encoder needed.
         let stream_index = unsafe {
             let fmt_ctx = output_ctx.as_mut_ptr();
-            let video_codec = ffmpeg_sys_next::avcodec_find_encoder(self.video_params.codec_id);
+            let codec_id = ffmpeg_sys_next::AVCodecID::AV_CODEC_ID_H264;
+            let video_codec = ffmpeg_sys_next::avcodec_find_encoder(codec_id);
             let st = ffmpeg_sys_next::avformat_new_stream(fmt_ctx, video_codec);
             if st.is_null() {
                 anyhow::bail!("Failed to add video stream");
@@ -93,13 +91,13 @@ impl VideoWriter {
 
             let codecpar = (*st).codecpar;
             (*codecpar).codec_type = ffmpeg_sys_next::AVMediaType::AVMEDIA_TYPE_VIDEO;
-            (*codecpar).codec_id = self.video_params.codec_id;
+            (*codecpar).codec_id = codec_id;
             (*codecpar).width = self.video_params.width as i32;
             (*codecpar).height = self.video_params.height as i32;
             (*codecpar).bit_rate = (self.video_params.bitrate_kbps * 1000) as i64;
             (*codecpar).format = ffmpeg_sys_next::AVPixelFormat::AV_PIX_FMT_NV12 as i32;
 
-            // Set extradata (SPS/PPS for H.264, VPS/SPS/PPS for HEVC, etc.)
+            // Set extradata (SPS/PPS for H.264)
             if !self.video_params.extradata.is_empty() {
                 let size = self.video_params.extradata.len();
                 let data = ffmpeg_sys_next::av_mallocz(
@@ -179,11 +177,18 @@ impl VideoWriter {
             .context("Failed to write output header")?;
 
         // Get the stream's actual time_base (muxer may have changed it from 1/fps)
-        let video_stream_tb = output_ctx.stream(stream_index).unwrap().time_base();
+        let video_stream_tb = output_ctx
+            .stream(stream_index)
+            .expect("video stream added above")
+            .time_base();
         let buffer_time_base = ffmpeg_next::Rational::new(1, self.video_params.fps as i32);
 
-        let audio_stream_tb =
-            audio_stream_index.map(|idx| output_ctx.stream(idx).unwrap().time_base());
+        let audio_stream_tb = audio_stream_index.map(|idx| {
+            output_ctx
+                .stream(idx)
+                .expect("audio stream added above")
+                .time_base()
+        });
 
         info!(
             "Time base: buffer={}/{}, video_stream={}/{}{}",
@@ -198,28 +203,14 @@ impl VideoWriter {
             },
         );
 
-        // Compute per-stream PTS offsets (rebase to 0)
-        let video_pts_offset = packets
-            .iter()
-            .find(|p| p.packet_type == PacketType::Video)
-            .map(|p| p.pts)
-            .unwrap_or(0);
-        let video_dts_offset = packets
-            .iter()
-            .find(|p| p.packet_type == PacketType::Video)
-            .map(|p| p.dts)
-            .unwrap_or(0);
-
-        let audio_pts_offset = packets
-            .iter()
-            .find(|p| p.packet_type == PacketType::Audio)
-            .map(|p| p.pts)
-            .unwrap_or(0);
-        let audio_dts_offset = packets
-            .iter()
-            .find(|p| p.packet_type == PacketType::Audio)
-            .map(|p| p.dts)
-            .unwrap_or(0);
+        // Compute per-stream PTS/DTS offsets (rebase each stream to 0)
+        let first = |ty| packets.iter().find(|p| p.packet_type == ty);
+        let (video_pts_offset, video_dts_offset) = first(PacketType::Video)
+            .map(|p| (p.pts, p.dts))
+            .unwrap_or((0, 0));
+        let (audio_pts_offset, audio_dts_offset) = first(PacketType::Audio)
+            .map(|p| (p.pts, p.dts))
+            .unwrap_or((0, 0));
 
         // Guard: skip packets with non-monotonic DTS.
         let mut last_video_dts: Option<i64> = None;
@@ -235,14 +226,14 @@ impl VideoWriter {
                     ffmpeg_pkt.rescale_ts(buffer_time_base, video_stream_tb);
 
                     let scaled_dts = ffmpeg_pkt.dts().unwrap_or(0);
-                    if let Some(last) = last_video_dts {
-                        if scaled_dts <= last {
-                            warn!(
-                                "Skipping non-monotonic video packet (DTS={}, last={})",
-                                scaled_dts, last
-                            );
-                            continue;
-                        }
+                    if let Some(last) = last_video_dts
+                        && scaled_dts <= last
+                    {
+                        warn!(
+                            "Skipping non-monotonic video packet (DTS={}, last={})",
+                            scaled_dts, last
+                        );
+                        continue;
                     }
                     last_video_dts = Some(scaled_dts);
 
@@ -260,18 +251,19 @@ impl VideoWriter {
                     if let Some(audio_idx) = audio_stream_index {
                         let rebased_dts = packet.dts - audio_dts_offset;
 
-                        if let Some(last) = last_audio_dts {
-                            if rebased_dts <= last {
-                                warn!(
-                                    "Skipping non-monotonic audio packet (DTS={}, last={})",
-                                    rebased_dts, last
-                                );
-                                continue;
-                            }
+                        if let Some(last) = last_audio_dts
+                            && rebased_dts <= last
+                        {
+                            warn!(
+                                "Skipping non-monotonic audio packet (DTS={}, last={})",
+                                rebased_dts, last
+                            );
+                            continue;
                         }
                         last_audio_dts = Some(rebased_dts);
 
-                        let audio_tb = audio_stream_tb.unwrap();
+                        let audio_tb =
+                            audio_stream_tb.expect("Some iff audio_stream_index is Some");
                         let mut ffmpeg_pkt = packet.to_ffmpeg_packet();
                         ffmpeg_pkt.set_pts(Some(packet.pts - audio_pts_offset));
                         ffmpeg_pkt.set_dts(Some(rebased_dts));
